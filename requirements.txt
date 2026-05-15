@@ -1,0 +1,17 @@
+# ── Required ─────────────────────────────────────────────────────────────────
+PyQt5>=5.15
+pyqtgraph>=0.13
+numpy>=1.24
+scipy>=1.10
+pygame>=2.4
+
+# ── Optional: 3D heart model (strongly recommended) ──────────────────────────
+# If these are not installed, a 2D anatomical diagram is shown instead.
+PyOpenGL>=3.1
+PyOpenGL_accelerate>=3.1
+
+# ── Optional: Phase 4 CNN training on MIT-BIH ─────────────────────────────────
+# Only needed if you want to train the real AI model (run train_cnn.py)
+# torch>=2.0
+# wfdb>=4.0
+# scikit-learn>=1.3

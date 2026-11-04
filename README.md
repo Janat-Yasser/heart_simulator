@@ -5,10 +5,11 @@ White + crimson design. Real-time ECG, AI classification, 3D heart model, and au
 
 ---
 
+
 ## Quick Start
 
 ```bash
-cd heartsim_v3
+cd heart_simulator
 python -m venv venv
 source venv/bin/activate          # macOS/Linux
 # venv\Scripts\activate           # Windows

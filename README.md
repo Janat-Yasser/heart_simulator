@@ -1,161 +1,141 @@
-# CardioSim: Virtual Heart Simulator
+# CardioSim
 
-An educational cardiac monitor for the desktop: a real-time synthetic ECG, a rhythm analyser that measures what a clinician reads off a strip, a conduction animation, a 3D heart and synchronised audio.
+**A bedside patient monitor you can teach with.** A simulated patient runs on a monitor modelled on real ICU equipment, with lead II ECG, SpO₂ pleth and respiration sweeping across a black screen. Every number is measured from the waveform, and the alarms go off when the analysis catches something.
+
+![CardioSim switching from sinus rhythm to ventricular tachycardia: the alarm turns red, the pulse wave flattens and the heart-rate box flashes](docs/monitor.gif)
 
 ![Python](https://img.shields.io/badge/Python-PyQt5-3776AB?logo=python&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-72%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-78%20passing-brightgreen)
+![License](https://img.shields.io/badge/license-MIT-blue)
 
 > Educational simulator, **not a medical device**. Don't use it for diagnosis.
 
----
+## Why it's interesting
 
+- **The monitor reads the strip; it isn't told the answer.** A rule-based analyser finds each QRS and measures rate, regularity, P waves, PR, QRS width, ST and QTc, the way a clinician reads a strip. Alarms come from those measurements, so they lag a few seconds behind a rhythm change, just as a real monitor's do. It calls all 8 simulated rhythms correctly across rates, noise levels and seeds (checked in the test suite).
+- **The pulse follows the heart.** The pleth wave gets one pulse per beat. A premature ventricular beat arrives before the ventricle has filled, so its pulse is weak. That's why, with PVCs, the oximeter's pulse rate reads lower than the ECG heart rate (the *pulse deficit*). In VT the pleth nearly flattens.
+- **It behaves like the real thing.** Red/yellow/cyan alarm priorities with `***`/`**`/`*` markers and IEC 60601-1-8 style tone patterns, a two-minute audio pause, a QRS beep whose pitch drops as SpO₂ falls, a manual blood-pressure cuff that inflates and deflates, and a freeze key.
+- **It teaches.** There's a rhythm quiz that hides the rhythm and the alarms, plays a random strip and explains the answer from what was measured on *that* strip. You can also print a strip on ECG paper.
 
-## Quick Start
+| Rhythm quiz | Printed strip |
+|---|---|
+| ![Quiz mode: four answer buttons under the waveforms, with an explanation of the right answer](docs/quiz.png) | ![A six-second lead II strip on pink ECG paper with a calibration pulse, RR intervals and measurements](docs/strip.png) |
+
+## How it fits together
+
+```mermaid
+flowchart LR
+  G[ECG generator<br/>8 rhythms, real-second timing] --> S[Sweep display<br/>II, Pleth, Resp]
+  G --> V[Vitals<br/>pleth per beat, resp, SpO2, BP]
+  V --> S
+  S --> A[Analyser<br/>measures the last 8 s on screen]
+  A --> N[Numerics<br/>HR, QTc, ST, pulse rate]
+  A --> L[Alarms<br/>red / yellow / cyan]
+  L --> Snd[Alarm tones]
+  A --> Q[Quiz explanations]
+```
+
+## Quick start
 
 ```bash
-cd heart_simulator
-python -m venv venv
-source venv/bin/activate          # macOS/Linux
-# venv\Scripts\activate           # Windows
-
+git clone https://github.com/Janat-Yasser/heart_simulator.git && cd heart_simulator
 pip install -r requirements.txt
 python main.py
 ```
 
----
+Keys: **F** freeze, **Space** pause alarm audio for 2 minutes, **N** start the blood-pressure cuff, **P** print a strip, **Q** rhythm quiz.
 
-## Sound Files (optional)
+<details>
+<summary>Rhythms</summary>
 
-The app synthesises all sounds automatically. To use real recorded sounds,
-download free `.wav` files and place them in `assets/sounds/`:
+| Rhythm | What you'll see |
+|---|---|
+| Normal sinus | Regular, 60–100 bpm, a P before every QRS |
+| Sinus bradycardia | Under 50 bpm |
+| Sinus tachycardia | Over 125 bpm, narrow QRS |
+| Atrial fibrillation | Irregularly irregular RR, wavy baseline, no P waves; pulse strength varies beat to beat |
+| PVCs | An early, wide beat every 4th, then a pause; weak pulse on the early beat |
+| 1st-degree AV block | PR around 300 ms at a normal rate |
+| Ventricular tachycardia | Wide QRS over 150 bpm; red alarm, pleth nearly flat, SpO₂ falls |
+| STEMI | ST segment raised after every QRS |
 
-| File | Where to get it |
-|------|----------------|
-| `heartbeat.wav` | [freesound.org/s/47935](https://freesound.org/s/47935) |
-| `beep.wav`      | [freesound.org/s/542074](https://freesound.org/s/542074) |
-| `alarm.wav`     | [freesound.org/s/366102](https://freesound.org/s/366102) |
+</details>
 
-All three are Creative Commons / CC0 — free to use.
+<details>
+<summary>How the analysis measures a strip</summary>
 
-See `assets/sounds/README.txt` for more options.
-
----
-
-## Pages
-
-| Page | Description |
-|------|-------------|
-| **Monitor** | Scrolling ECG trace, rhythm strip, live stats: HR, RR and QTc (measured from the trace), SpO₂ (simulated) |
-| **Controls** | BPM, rhythm type, noise, ST elevation, audio mode |
-| **Rhythm Analysis** | Rule-based analyser: measured features, the rhythm call, how clearly it passed its threshold, and alerts |
-| **Conduction** | Animated SA→AV→His→LBB/RBB pathway |
-| **3D Heart** | Rotating 3D model (OpenGL) or anatomical 2D cross-section |
-
----
-
-## Rhythm Modes
-
-| Rhythm | Key Features |
-|--------|-------------|
-| Normal Sinus | Regular, 60–100 bpm |
-| Bradycardia | < 50 bpm, lower pitch beep |
-| Tachycardia | > 125 bpm (up to 220 bpm) |
-| Atrial Fibrillation | Irregular RR, absent P waves, fibrillatory baseline, alarm |
-| PVC | Early ectopic beat every 4th, compensatory pause |
-| 1st Degree Heart Block | PR interval prolonged to ~300 ms at a normal rate |
-| Ventricular Tachycardia | Wide QRS, > 150 bpm, alarm |
-| STEMI | Elevated ST segment |
-
----
-
-## Audio Modes
-
-| Mode | Description |
-|------|-------------|
-| Beep | Classic monitor beep, pitch varies by rhythm |
-| Heart sounds | S1/S2 lub-dub (synthesised or from heartbeat.wav) |
-| Both | Beep + heart sounds together |
-| Mute | Silent |
-
----
-
-## 3D Heart
-
-- Requires `PyOpenGL` and `PyOpenGL_accelerate`
-- **Drag** to rotate, **scroll** to zoom
-- Auto-rotates; click to take manual control
-- Heart pulses in sync with each ECG beat
-- Falls back to a 2D anatomical cross-section if OpenGL is unavailable
-
----
-
-## How the analysis works
-
-`ai/classifier.py` measures each beat the way a rhythm strip is read:
+`ai/classifier.py`:
 
 | Feature | How it's measured |
 |---|---|
-| Heart rate / RR | R-peak detection with a 200 ms refractory period (works to ~300 bpm) |
+| Heart rate / RR | R-peak detection with a 200 ms refractory period (works to about 300 bpm) |
 | QRS width | QRS onset to offset, where the slope drops below 12% of its peak |
 | P wave and PR | Largest deflection up to 350 ms before the QRS, then P onset to QRS onset |
-| ST level | Relative to the PR baseline at J+60 ms (J+40 ms above 100 bpm). Not assessed above 150 bpm, where the T wave merges into the ST segment |
-| QT / QTc | QRS onset to T end (tangent method), corrected with Bazett's formula |
+| ST level | Against the PR baseline at J+60 ms (J+40 ms above 100 bpm). Not assessed above 150 bpm, or on wide complexes |
+| QT / QTc | QRS onset to T end (tangent method), Bazett-corrected |
 
-Textbook criteria then decide the rhythm (VT, PVCs, AFib, ST elevation, 1st-degree block, brady/tachycardia, sinus). The percentage shown is a **rule margin**, meaning how far the features sit past the deciding threshold. It isn't a calibrated probability.
+Textbook criteria then decide the rhythm. The percentage on the Analysis page is a **rule margin**, meaning how far the features sit past the deciding threshold. It isn't a calibrated probability.
 
-The ECG generator (`core/ecg_generator.py`) times every wave in real seconds around each R peak: QT follows Bazett's formula, and ventricular beats stay wide (~160 ms) at any rate.
+The generator (`core/ecg_generator.py`) times every wave in real seconds around each R peak, so QT follows Bazett's formula and ventricular beats stay wide at any rate. SpO₂, respiration and blood pressure (`core/vitals.py`) are simulated per rhythm and labelled "(sim)" on screen.
 
-## Tests
+</details>
+
+<details>
+<summary>Sound</summary>
+
+Everything is synthesised. To use recordings instead, put `heartbeat.wav`, `beep.wav` or `alarm.wav` in `assets/sounds/` (see `assets/sounds/README.txt` for free CC0 sources). Under Setup you can pick QRS tone, heart sounds, both or silent, and turn off the SpO₂-following pitch.
+
+</details>
+
+<details>
+<summary>Tests</summary>
 
 ```bash
 pip install pytest
 pytest
 ```
 
-72 tests: every simulated rhythm across several heart rates, two noise levels and random seeds, plus heart rate accuracy up to 220 bpm and interval measurements (QTc, PR, QRS).
+78 tests: every rhythm across several heart rates, noise levels and seeds; heart rate accuracy up to 220 bpm; QTc, PR and QRS measurements; the pulse deficit; alarm ranking; quiz questions and explanations.
 
-## CNN training on MIT-BIH (optional, experimental)
+</details>
+
+<details>
+<summary>Optional: CNN training on MIT-BIH (experimental)</summary>
 
 ```bash
 pip install torch wfdb scikit-learn
 python train_cnn.py
 ```
 
-This downloads the MIT-BIH Arrhythmia Database and trains a 1-D CNN on the 5 AAMI beat classes (N, S, V, F, Q). It uses the standard **inter-patient** split (de Chazal 2004): training patients (DS1) and test patients (DS2) never overlap, so the scores are honest. The weights are saved to `ai/ecg_cnn.pt`. The live monitor doesn't use the CNN yet; that's on the roadmap.
+Trains a 1-D CNN on the 5 AAMI beat classes with the standard **inter-patient** split (de Chazal 2004), so training and test patients never overlap. The live monitor doesn't use the CNN yet.
 
----
+</details>
 
-## Structure
+<details>
+<summary>Project layout</summary>
 
 ```
-heart_simulator/
-├── main.py                    ← Entry point
-├── requirements.txt
-├── train_cnn.py               ← Optional CNN trainer (MIT-BIH, inter-patient)
-├── tests/                     ← pytest suite
-├── core/
-│   └── ecg_generator.py       ← ECG generator (8 rhythms, real-time intervals)
-├── ai/
-│   └── classifier.py          ← Rule-based rhythm analyser
-├── audio/
-│   └── sound_engine.py        ← Synthesised + file-based audio
-├── ui/
-│   ├── widgets.py             ← Reusable UI components
-│   └── heart_page.py          ← 3D/2D heart model page
-└── assets/
-    └── sounds/
-        ├── README.txt         ← Sound file download instructions
-        ├── heartbeat.wav      ← (place here)
-        ├── beep.wav           ← (place here)
-        └── alarm.wav          ← (place here)
+main.py               the monitor window: sweep, numerics, alarms, NIBP, quiz, strips
+core/ecg_generator.py ECG generator, 8 rhythms
+core/vitals.py        pleth, respiration, simulated SpO2 / BP
+core/alarms.py        alarm rules and priorities
+core/quiz.py          quiz questions and explanations
+ai/classifier.py      rule-based rhythm analyser
+audio/sound_engine.py synthesised tones and alarm patterns
+ui/monitor.py         sweep channels, parameter boxes, alarm bar
+ui/strip.py           printable ECG-paper strip
+ui/widgets.py         analysis panel, conduction diagram
+ui/heart_page.py      3D heart (OpenGL) or 2D cross-section
+train_cnn.py          optional MIT-BIH trainer
 ```
 
----
+</details>
 
 ## Roadmap
 
-- [ ] Run the MIT-BIH CNN inside the monitor (resample 500 → 360 Hz, per-beat voting)
-- [ ] Validate the rule-based analyser on real MIT-BIH strips, not just simulated ones
-- [ ] 2nd- and 3rd-degree AV block, atrial flutter
-- [ ] ECG quiz mode for students
+- Run the MIT-BIH CNN inside the monitor
+- Validate the analyser on real MIT-BIH strips, not only simulated ones
+- 2nd- and 3rd-degree AV block, atrial flutter
+- Adjustable alarm limits per patient profile (adult, child)
 
+MIT licensed.

@@ -31,7 +31,7 @@ pg.setConfigOption('foreground', '#2D3142')
 from core.ecg_generator import (
     ECGParameters, RhythmType, RHYTHM_INFO, generate_ecg
 )
-from ai.classifier import classify
+from ai.classifier import classify, extract_features
 import audio.sound_engine as snd
 from ui.widgets import (
     label, hdiv, spacer,
@@ -106,7 +106,7 @@ class Sidebar(QFrame):
         app_name.setFont(QFont(FNT_SER, 15, QFont.Bold))
         app_name.setStyleSheet(f"color:{INK}; background:transparent;")
         app_name.setAlignment(Qt.AlignCenter)
-        version = QLabel("v3.0 · Clinical Edition")
+        version = QLabel("v3.1 · Educational simulator")
         version.setFont(QFont(FNT_UI, 8))
         version.setStyleSheet(f"color:{MUTED}; background:transparent;")
         version.setAlignment(Qt.AlignCenter)
@@ -118,7 +118,7 @@ class Sidebar(QFrame):
         pages = [
             ("♥", "Monitor",    0),
             ("⚡", "Controls",  1),
-            ("🤖", "AI Analysis",2),
+            ("🤖", "Rhythm Analysis",2),
             ("⚙", "Conduction", 3),
             ("◎", "3D Heart",   4),
         ]
@@ -209,7 +209,7 @@ class MonitorPage(QWidget):
         self.t_rr  = StatTile("RR Interval", "ms",   CRIM)
         self.t_qt  = StatTile("QTc",          "ms",   INFO)
         self.t_amp = StatTile("R Amplitude",  "mV",   OK)
-        self.t_spo = StatTile("SpO₂",         "%",    WARN)
+        self.t_spo = StatTile("SpO₂ (sim)",   "%",    WARN)
         self.t_spo.set_value("99", OK)
         for t in (self.t_rr, self.t_qt, self.t_amp, self.t_spo):
             tile_row.addWidget(t)
@@ -474,7 +474,7 @@ class MainWindow(QMainWindow):
         # ── Page 2: AI ────────────────────────────────────────────────────
         ai_outer = QWidget()
         ai_l = QVBoxLayout(ai_outer); ai_l.setContentsMargins(24, 20, 24, 20)
-        ai_l.addWidget(label("AI Analysis", 18, bold=True, color=INK, font="Georgia, serif"))
+        ai_l.addWidget(label("Rhythm Analysis", 18, bold=True, color=INK, font="Georgia, serif"))
         ai_l.addWidget(label("Rule-based morphological classifier · updates every 4 seconds", 10, color=INK3))
         ai_l.addWidget(hdiv())
         self._ai_panel = AIPanel()
@@ -684,16 +684,15 @@ class MainWindow(QMainWindow):
         snd.beat(self.params.rhythm)
 
     def _update_stats(self):
-        from scipy.signal import find_peaks
+        # Every number here is measured from the signal on screen.
         buf = self._monitor._buf
-        pks, _ = find_peaks(buf, height=0.35, distance=self._sr * 0.35)
-        if len(pks) < 2:
+        f = extract_features(buf, self._sr)
+        if not f.get('valid'):
             return
-        rr    = np.diff(pks) / self._sr * 1000
-        rr_m  = float(np.mean(rr))
-        hr    = int(60000 / rr_m) if rr_m > 0 else 0
-        qt    = int(0.42 * rr_m)
-        ramp  = round(float(np.max(buf[pks])), 2)
+        rr_m  = f['rr_mean']
+        hr    = int(round(f['hr']))
+        qt    = int(round(f['qtc_ms'])) if f['qtc_ms'] else '—'
+        ramp  = round(float(np.percentile(buf, 99.5)), 2)
 
         hr_col = OK if 50 <= hr <= 110 else (INFO if hr < 50 else DANGER)
         self._monitor.hr_big.setText(str(hr))
@@ -702,6 +701,8 @@ class MainWindow(QMainWindow):
         self._monitor.t_qt.set_value(qt)
         self._monitor.t_amp.set_value(ramp)
 
+        # SpO2 can't be derived from an ECG; it's a simulated value that dips
+        # with poor-output rhythms, and is labelled "(sim)" on the monitor.
         if self.params.rhythm in (RhythmType.VTACH, RhythmType.AFIB):
             self._monitor.t_spo.set_value("91", WARN)
         else:

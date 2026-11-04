@@ -1,7 +1,7 @@
 """
-ECG Signal Generator — Full Physics Model
-Gaussian basis synthesis of P, QRS, T waves.
-Supports 8 rhythm types with physiologically accurate parameters.
+ECG Signal Generator
+Gaussian-basis synthesis of P, QRS and T waves, timed in real seconds around each
+R peak (QT follows Bazett, QRS width doesn't scale with rate). Supports 8 rhythms.
 """
 
 import numpy as np
@@ -40,110 +40,101 @@ class ECGParameters:
 
     # Wave amplitudes (mV)
     p_amp:  float = 0.15
-    q_amp:  float = 0.06
+    q_amp:  float = 0.10
     r_amp:  float = 1.00
-    s_amp:  float = 0.20
-    t_amp:  float = 0.28
+    s_amp:  float = 0.25
+    t_amp:  float = 0.30
     st_elevation: float = 0.0   # mV ST shift (STEMI)
 
-    # Wave widths (fraction of RR interval)
-    p_width: float = 0.040
-    q_width: float = 0.014
-    r_width: float = 0.016
-    s_width: float = 0.014
-    t_width: float = 0.065
-
-    # Wave positions (fraction of RR)
-    p_pos:  float = 0.160
-    q_pos:  float = 0.260
-    r_pos:  float = 0.300
-    s_pos:  float = 0.340
-    t_pos:  float = 0.500
+    # Intervals in SECONDS (real ECG intervals don't scale with heart rate the way
+    # a fraction of the RR interval would: a ventricular beat is wide at any rate).
+    pr_interval: float = 0.16   # P onset -> QRS onset (1st-degree block: > 0.20 s)
+    qrs_sigma:   float = 0.010  # R wave width (normal QRS ~ 80-100 ms)
+    qtc:         float = 0.40   # Bazett-corrected QT; QT = QTc * sqrt(RR)
 
     # Noise
     baseline_noise: float = 0.012
     muscle_noise:   float = 0.006
 
 
-def _gauss(x, c, w, a):
-    return a * np.exp(-0.5 * ((x - c) / max(w, 1e-6)) ** 2)
+def _add_gauss(sig: np.ndarray, t: np.ndarray, centre: float, sigma: float, amp: float, fs: int) -> None:
+    """Add a Gaussian wave (in place), only computing the samples that matter (+-5 sigma)."""
+    lo = max(0, int((centre - 5 * sigma) * fs))
+    hi = min(len(t), int((centre + 5 * sigma) * fs) + 1)
+    if hi > lo:
+        sig[lo:hi] += amp * np.exp(-0.5 * ((t[lo:hi] - centre) / sigma) ** 2)
 
 
-def _single_beat(phase: np.ndarray, p: ECGParameters, ectopic=False) -> np.ndarray:
-    sig = np.zeros_like(phase)
+def _add_plateau(sig, t, start, end, level, fs, edge=0.015):
+    """Smooth step up at `start`, down at `end` (used for ST elevation)."""
+    lo = max(0, int((start - 4 * edge) * fs)); hi = min(len(t), int((end + 4 * edge) * fs) + 1)
+    if hi > lo:
+        x = t[lo:hi]
+        sig[lo:hi] += level * 0.25 * (1 + np.tanh((x - start) / edge)) * (1 - np.tanh((x - end) / edge))
+
+
+def _beat(sig, t, r_time, rr, p: ECGParameters, fs, ectopic=False, p_wave=True):
+    """Draw one beat centred on its R peak at `r_time` (seconds)."""
+    qt = p.qtc * np.sqrt(rr)                       # Bazett: QT shortens at faster rates
     if not ectopic:
-        sig += _gauss(phase, p.p_pos,  p.p_width,  p.p_amp)
-        sig -= _gauss(phase, p.q_pos,  p.q_width,  p.q_amp)
-        sig += _gauss(phase, p.r_pos,  p.r_width,  p.r_amp)
-        sig -= _gauss(phase, p.s_pos,  p.s_width,  p.s_amp)
-        sig += _gauss(phase, p.t_pos,  p.t_width,  p.t_amp)
-        # ST elevation plateau
-        if p.st_elevation != 0:
-            st_s = p.s_pos + 0.02
-            st_e = p.t_pos - 0.02
-            mask = (phase >= st_s) & (phase <= st_e)
-            sig[mask] += p.st_elevation
+        qrs_on = r_time - 0.045
+        if p_wave:
+            # P wave peaks ~50 ms after P onset; PR = P onset -> QRS onset
+            _add_gauss(sig, t, qrs_on - p.pr_interval + 0.05, 0.022, p.p_amp, fs)
+        _add_gauss(sig, t, r_time - 0.025, 0.008, -p.q_amp, fs)
+        _add_gauss(sig, t, r_time, p.qrs_sigma, p.r_amp, fs)
+        _add_gauss(sig, t, r_time + 0.025, 0.008, -p.s_amp, fs)
+        # T peak placed so the tangent-method T end (peak + 2 sigma) lands at qrs_on + QT
+        t_peak = qrs_on + qt - 0.08
+        _add_gauss(sig, t, t_peak, 0.04, p.t_amp, fs)
+        if p.st_elevation:
+            _add_plateau(sig, t, r_time + 0.05, t_peak - 0.03, p.st_elevation, fs)
     else:
-        # Wide, bizarre ectopic beat (PVC / VTach)
-        sig += _gauss(phase, 0.30, 0.035, 1.45)
-        sig -= _gauss(phase, 0.38, 0.030, 0.80)
-        sig += _gauss(phase, 0.52, 0.070, -0.32)  # inverted T
-    return sig
+        # Ventricular (ectopic) beat: no P wave, wide bizarre QRS (~160 ms), discordant T
+        _add_gauss(sig, t, r_time, 0.028, 1.45 * p.r_amp, fs)
+        _add_gauss(sig, t, r_time + 0.065, 0.028, -0.80 * p.r_amp, fs)
+        _add_gauss(sig, t, r_time - 0.08 + qt + 0.02, 0.06, -0.35, fs)
 
 
 def generate_ecg(duration_sec: float, params: ECGParameters,
                  seed: int = 42) -> tuple[np.ndarray, np.ndarray, list[int]]:
     """
     Returns (time, signal, r_peak_indices).
-    r_peak_indices are sample indices of each R-peak — used for audio sync.
+    r_peak_indices are sample indices of each R-peak, used for audio sync.
     """
-    n  = int(duration_sec * params.sample_rate)
-    t  = np.linspace(0, duration_sec, n, endpoint=False)
+    fs = params.sample_rate
+    n  = int(duration_sec * fs)
+    t  = np.arange(n) / fs
     s  = np.zeros(n)
     rng = np.random.default_rng(seed)
 
-    rr_list = _build_rr(params, duration_sec, rng)
+    p = params
+    if p.rhythm == RhythmType.HEART_BLOCK:
+        p = ECGParameters(**{**params.__dict__, 'pr_interval': max(params.pr_interval, 0.28)})
 
+    rr_list = _build_rr(p, duration_sec, rng)
     r_peaks = []
-    beat_start = 0.0
-
+    r_time = 0.35
     for i, rr in enumerate(rr_list):
-        beat_end = beat_start + rr
-        mask = (t >= beat_start) & (t < beat_end)
-        if not np.any(mask):
-            beat_start = beat_end
-            continue
+        if i > 0:
+            r_time += rr
+        if r_time >= duration_sec:
+            break
+        ectopic = (p.rhythm == RhythmType.VTACH) or (p.rhythm == RhythmType.PVC and i % 4 == 3)
+        p_wave = p.rhythm != RhythmType.AFIB
+        _beat(s, t, r_time, rr if i else rr_list[0], p, fs, ectopic=ectopic, p_wave=p_wave)
+        r_peaks.append(int(round(r_time * fs)))
 
-        phase = (t[mask] - beat_start) / rr
-        ectopic = False
-
-        if params.rhythm == RhythmType.AFIB:
-            # Suppress P, add fibrillatory baseline
-            pm = ECGParameters(**{**params.__dict__, 'p_amp': 0.0})
-            pm.rhythm = params.rhythm
-            s[mask] += _single_beat(phase, pm)
-            fib = rng.normal(0, 0.06, mask.sum()) * np.sin(2 * np.pi * 350 * t[mask])
-            s[mask] += fib
-        elif params.rhythm == RhythmType.PVC and i % 4 == 3:
-            ectopic = True
-            s[mask] += _single_beat(phase, params, ectopic=True)
-        elif params.rhythm == RhythmType.VTACH:
-            s[mask] += _single_beat(phase, params, ectopic=True)
-        else:
-            s[mask] += _single_beat(phase, params)
-
-        # R-peak index: find max in QRS zone
-        qrs_mask  = mask & (t >= beat_start + rr * 0.25) & (t <= beat_start + rr * 0.40)
-        if np.any(qrs_mask):
-            r_peaks.append(int(np.argmax(s * qrs_mask)))
-
-        beat_start = beat_end
+    if p.rhythm == RhythmType.AFIB:
+        # Fibrillatory "f waves": chaotic 4-9 Hz atrial activity replacing P waves
+        for _ in range(4):
+            f = rng.uniform(4.0, 9.0)
+            s += rng.uniform(0.015, 0.035) * np.sin(2 * np.pi * f * t + rng.uniform(0, 2 * np.pi))
 
     # Physiological artefacts
-    s += 0.04 * np.sin(2 * np.pi * 0.15 * t)          # baseline wander
-    s += rng.normal(0, params.baseline_noise, n)
-    s += rng.normal(0, params.muscle_noise, n) * np.sin(50 * np.pi * t)
-
+    s += 0.04 * np.sin(2 * np.pi * 0.15 * t)          # baseline wander (breathing)
+    s += rng.normal(0, p.baseline_noise, n)
+    s += rng.normal(0, p.muscle_noise, n) * np.sin(50 * np.pi * t)
     return t, s, r_peaks
 
 
@@ -170,7 +161,8 @@ def _build_rr(p: ECGParameters, dur: float, rng) -> np.ndarray:
             rr[i+1] = base * 1.30
         return rr
     elif r == RhythmType.HEART_BLOCK:
-        return _rr_normal(p.bpm, dur, rng, 0.010) * 1.08
+        # 1st-degree block keeps a normal rate; the PR interval is what's prolonged
+        return _rr_normal(p.bpm, dur, rng, 0.010)
     elif r == RhythmType.VTACH:
         return _rr_normal(max(p.bpm, 150), dur, rng, 0.005)
     elif r == RhythmType.STEMI:

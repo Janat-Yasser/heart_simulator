@@ -148,7 +148,7 @@ class AIPanel(QFrame):
         lo.setContentsMargins(20, 16, 20, 16)
         lo.setSpacing(12)
 
-        lo.addWidget(label("AI ANALYSIS", 8, color=MUTED))
+        lo.addWidget(label("RHYTHM ANALYSIS (RULE-BASED)", 8, color=MUTED))
 
         self._badge = QLabel("Initialising…")
         self._badge.setFont(QFont(FNT_UI, 14, QFont.Bold))
@@ -169,7 +169,7 @@ class AIPanel(QFrame):
             f"QProgressBar {{ background:{BG3}; border-radius:3px; border:none; }}"
             f"QProgressBar::chunk {{ background:{CRIM}; border-radius:3px; }}"
         )
-        self._conf_lbl = label("0% confidence", 8, color=MUTED)
+        self._conf_lbl = label("—", 8, color=MUTED)
         lo.addWidget(self._conf_bar)
         lo.addWidget(self._conf_lbl)
 
@@ -221,14 +221,14 @@ class AIPanel(QFrame):
         )
         pct = int(r.confidence * 100)
         self._conf_bar.setValue(pct)
-        self._conf_lbl.setText(f"{pct}% confidence")
+        self._conf_lbl.setText(f"{pct}% rule margin" if pct else "—")
 
         self._fv["Heart Rate"].setText(f"{r.hr_bpm:.0f}  bpm")
         self._fv["RR Interval"].setText(f"{r.rr_mean_ms:.0f}  ms")
         self._fv["QTc"].setText(f"{r.qt_ms:.0f}  ms")
         self._fv["ST Level"].setText(f"{r.st_level:+.3f}  mV")
         self._fv["P Wave"].setText("Present ✓" if r.p_present else "Absent ✗")
-        self._fv["QRS Width"].setText("Wide" if r.qrs_wide else "Normal")
+        self._fv["QRS Width"].setText(f"{r.qrs_ms:.0f} ms · " + ("wide" if r.qrs_wide else "normal") if r.qrs_ms else "—")
 
         if r.alerts:
             self._alert.setText("⚠  " + "   ⚠  ".join(r.alerts))

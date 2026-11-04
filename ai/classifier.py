@@ -1,210 +1,227 @@
 """
-AI Arrhythmia Classifier — Phase 3
-Two-tier approach:
-  1. Rule-based fast classifier (always available, no training needed)
-  2. Optional: lightweight 1-D CNN trained on MIT-BIH data
+Arrhythmia classifier (rule-based, interpretable)
 
-The rule-based engine runs on every window and is the primary classifier
-until a trained model is loaded.
+Measures the same features a clinician reads off a rhythm strip (rate, RR
+regularity, P waves, PR interval, QRS width, ST level, QT/QTc) and applies
+textbook criteria. Every number shown in the UI is measured from the signal.
+
+"Confidence" is how far the measured features sit from the decision thresholds
+(e.g. a QRS of 180 ms is far more clearly "wide" than one of 125 ms). It is NOT
+a calibrated probability.
+
+This is an educational tool, not a medical device.
 """
 
+from dataclasses import dataclass, field
+
 import numpy as np
-from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass
 class ClassificationResult:
     label:       str
-    confidence:  float          # 0–1
+    confidence:  float          # 0-1, margin-based (see module docstring)
     hr_bpm:      float
     rr_mean_ms:  float
     rr_std_ms:   float
-    qt_ms:       float
-    st_level:    float          # mean ST segment mV
+    qt_ms:       float          # Bazett-corrected QTc (ms), measured
+    st_level:    float          # ST deviation at J+60 ms (mV)
     p_present:   bool
-    qrs_wide:    bool           # QRS > 120 ms → aberrant conduction
-    alerts:      list[str]      # list of clinical alert strings
-    color:       str            # hex for UI badge
+    qrs_wide:    bool           # QRS >= 120 ms
+    alerts:      list = field(default_factory=list)
+    color:       str = "#90a4ae"
+    qrs_ms:      float = 0.0
+    pr_ms:       float = 0.0
+    qt_raw_ms:   float = 0.0
+
+
+# ── Signal helpers ───────────────────────────────────────────────────────────
+
+def _bandpass(signal, fs, lo=0.5, hi=40.0):
+    from scipy.signal import butter, sosfiltfilt
+    sos = butter(3, [lo, hi], btype='bandpass', fs=fs, output='sos')
+    # long padding keeps the filter's start-up transient from looking like a beat
+    return sosfiltfilt(sos, signal, padtype='even', padlen=min(len(signal) - 1, fs))
+
+
+def detect_r_peaks(clean, fs):
+    """R peaks with a 200 ms refractory period (works up to ~300 bpm)."""
+    from scipy.signal import find_peaks
+    if len(clean) < fs // 2:
+        return np.array([], dtype=int)
+    amp = np.percentile(np.abs(clean), 99.5)
+    if amp < 0.2:
+        return np.array([], dtype=int)
+    peaks, props = find_peaks(clean, height=0.45 * amp, distance=int(0.20 * fs), prominence=0.35 * amp)
+    if len(peaks) >= 3:
+        # Drop tall T waves: real R peaks are similar in height to each other.
+        keep = props['peak_heights'] >= 0.6 * np.median(props['peak_heights'])
+        peaks = peaks[keep]
+    return peaks
+
+
+def _qrs_bounds(clean, pk, fs):
+    """QRS onset/offset around an R peak: where the slope falls below 12% of its local max."""
+    w = int(0.15 * fs)
+    lo, hi = max(1, pk - w), min(len(clean) - 1, pk + w)
+    d = np.abs(np.diff(clean[lo:hi]))
+    if not len(d):
+        return pk, pk
+    thr = 0.12 * d.max()
+    c = pk - lo
+    on = c
+    while on > 0 and (d[on - 1] > thr or d[max(0, on - 6):on].max() > thr):
+        on -= 1
+    off = min(c, len(d) - 1)
+    while off < len(d) - 1 and (d[off] > thr or d[off:off + 6].max() > thr):
+        off += 1
+    return lo + on, lo + off
 
 
 # ── Feature extraction ───────────────────────────────────────────────────────
 
 def extract_features(signal: np.ndarray, sample_rate: int = 500) -> dict:
-    """Extract morphological features from a signal window."""
-    from scipy.signal import find_peaks, butter, sosfilt
-
-    # Band-pass 0.5–40 Hz
-    sos = butter(4, [0.5, 40], btype='bandpass', fs=sample_rate, output='sos')
-    clean = sosfilt(sos, signal)
-
-    # R-peaks
-    min_dist = int(0.35 * sample_rate)
-    peaks, props = find_peaks(clean, height=0.3, distance=min_dist)
-
-    if len(peaks) < 2:
+    fs = sample_rate
+    clean = _bandpass(np.asarray(signal, dtype=float), fs)
+    peaks = detect_r_peaks(clean, fs)
+    if len(peaks) < 3:
         return {'valid': False}
 
-    rr      = np.diff(peaks) / sample_rate * 1000   # ms
-    rr_mean = float(np.mean(rr))
-    rr_std  = float(np.std(rr))
-    hr      = 60000.0 / rr_mean if rr_mean > 0 else 0
+    rr = np.diff(peaks) / fs                     # seconds
+    rr_med = float(np.median(rr))
+    hr = 60.0 / float(np.mean(rr))
 
-    # QRS width: measure time from Q trough to S trough around each R-peak
-    qrs_widths = []
-    for pk in peaks:
-        lo = max(0, pk - int(0.08 * sample_rate))
-        hi = min(len(clean), pk + int(0.08 * sample_rate))
-        seg = clean[lo:hi]
-        half = len(seg) // 2
-        if half < 2: continue
-        q_idx = np.argmin(seg[:half])
-        s_idx = np.argmin(seg[half:]) + half
-        qrs_widths.append((s_idx - q_idx) / sample_rate * 1000)
-    qrs_ms = float(np.mean(qrs_widths)) if qrs_widths else 80.0
+    qrs_ms, pr_ms, st, qt_s, p_amps, premature, wide_flags = [], [], [], [], [], [], []
+    for i, pk in enumerate(peaks[1:-1], start=1):          # skip edge beats (may be clipped)
+        on, off = _qrs_bounds(clean, pk, fs)
+        width = (off - on) / fs * 1000
+        qrs_ms.append(width)
+        wide_flags.append(width >= 120)
+        premature.append(rr[i - 1] < 0.85 * rr_med)
 
-    # P-wave presence: energy in window before R-peak
-    p_energies = []
-    for pk in peaks:
-        p_start = max(0, pk - int(0.20 * sample_rate))
-        p_end   = max(0, pk - int(0.08 * sample_rate))
-        if p_end > p_start:
-            p_energies.append(float(np.max(np.abs(clean[p_start:p_end]))))
-    p_energy = float(np.mean(p_energies)) if p_energies else 0.0
+        # Isoelectric baseline just before QRS onset
+        b0 = max(0, on - int(0.05 * fs))
+        base = float(np.median(clean[b0:on])) if on > b0 else 0.0
+        r_amp = float(clean[pk] - base)
 
-    # ST level: mean signal between S-wave end and T-wave peak
-    st_segments = []
-    for pk in peaks:
-        st_s = pk + int(0.06 * sample_rate)
-        st_e = pk + int(0.15 * sample_rate)
-        if st_e < len(clean):
-            st_segments.append(float(np.mean(clean[st_s:st_e])))
-    st_level = float(np.mean(st_segments)) if st_segments else 0.0
+        # P wave: biggest bump up to 350 ms before QRS onset (but after the previous T)
+        p_lo = max(peaks[i - 1] + int(0.45 * rr[i - 1] * fs), on - int(0.35 * fs))
+        p_hi = on - int(0.035 * fs)
+        if p_hi - p_lo > int(0.04 * fs):
+            seg = clean[p_lo:p_hi] - base
+            j = int(np.argmax(seg))
+            p_amps.append(float(seg[j]) / max(r_amp, 1e-6))
+            pr_ms.append((on - (p_lo + j - int(0.05 * fs))) / fs * 1000)   # P onset ~50 ms before its peak
+        else:
+            p_amps.append(0.0)
 
-    # QT interval (Bazett formula approximation)
-    qt_ms = 0.42 * rr_mean if rr_mean > 0 else 0
+        # ST level: J+60 ms (J+40 ms above 100 bpm, before the T wave starts).
+        # Use the lower of J+20 and that point so a T upstroke isn't mistaken for ST elevation.
+        jx = off + int((0.04 if rr[i] < 0.6 else 0.06) * fs)
+        j20 = off + int(0.02 * fs)
+        if jx < len(clean):
+            st.append(float(min(clean[j20], clean[jx]) - base))
 
+        # QT: QRS onset -> T end (tangent method on the T wave's down-slope)
+        t_lo, t_hi = off + int(0.08 * fs), min(len(clean) - 1, pk + int(0.65 * rr[i] * fs))
+        if t_hi - t_lo > int(0.05 * fs):
+            seg = clean[t_lo:t_hi] - base
+            tp = int(np.argmax(np.abs(seg)))
+            sign = np.sign(seg[tp]) or 1.0
+            tail = sign * seg[tp:]
+            if len(tail) > 3:
+                slope = np.diff(tail)
+                k = int(np.argmin(slope))                   # steepest return toward baseline
+                if slope[k] < 0:
+                    t_end = tp + k + tail[k] / -slope[k]    # where the tangent hits baseline
+                    qt_s.append((t_lo + t_end - on) / fs)
+
+    def med(x, d=0.0):
+        return float(np.median(x)) if len(x) else d
+
+    qt = med(qt_s)
     return {
-        'valid':    True,
-        'hr':       hr,
-        'rr_mean':  rr_mean,
-        'rr_std':   rr_std,
-        'qrs_ms':   qrs_ms,
-        'p_energy': p_energy,
-        'st_level': st_level,
-        'qt_ms':    qt_ms,
-        'n_peaks':  len(peaks),
+        'valid': True,
+        'hr': hr,
+        'rr_mean': float(np.mean(rr) * 1000),
+        'rr_std': float(np.std(rr) * 1000),
+        'rr_cv': float(np.std(rr) / np.mean(rr)),
+        'qrs_ms': med(qrs_ms, 80.0),
+        'wide_fraction': float(np.mean(wide_flags)) if wide_flags else 0.0,
+        'premature_wide': int(sum(p and w for p, w in zip(premature, wide_flags))),
+        'p_ratio': med(p_amps),
+        'p_fraction': float(np.mean([a > 0.08 for a in p_amps])) if p_amps else 0.0,
+        'pr_ms': med(pr_ms),
+        'st_level': med(st),
+        'qt_ms': qt * 1000,
+        'qtc_ms': (qt / np.sqrt(rr_med)) * 1000 if qt else 0.0,
+        'n_peaks': int(len(peaks)),
     }
 
 
-# ── Rule-based classifier ────────────────────────────────────────────────────
+# ── Rules ────────────────────────────────────────────────────────────────────
+
+def _margin(value, threshold, scale):
+    """Map distance past a threshold to 0.55-0.98."""
+    return float(np.clip(0.55 + 0.43 * (abs(value - threshold) / scale), 0.55, 0.98))
+
+
+def _classify_rhythm(f):
+    hr, qrs, cv = f['hr'], f['qrs_ms'], f['rr_cv']
+    p_ok = f['p_fraction'] >= 0.6
+
+    if f['wide_fraction'] >= 0.6 and hr >= 100:
+        return "Ventricular Tachycardia", _margin(qrs, 120, 60), "#ff1744"
+    if f['premature_wide'] >= 1 and f['wide_fraction'] < 0.6:
+        return "Premature Ventricular Contractions", _margin(f['wide_fraction'], 0, 0.3), "#ef5350"
+    # Irregularly irregular rhythm: AFib (fibrillatory waves can fool the P-wave detector)
+    if cv > 0.20 or (cv > 0.10 and not p_ok):
+        return "Atrial Fibrillation", _margin(cv, 0.10, 0.25), "#ef5350"
+    # Above ~150 bpm the T wave runs into the ST segment, so ST can't be judged
+    # (bedside monitors suspend ST analysis at these rates too).
+    if hr <= 150 and f['st_level'] >= 0.10:
+        return "ST Elevation", _margin(f['st_level'], 0.10, 0.15), "#ff6d00"
+    # PR can only be read when the P wave isn't buried in the previous T (<= 150 bpm)
+    if p_ok and hr <= 150 and f['pr_ms'] > 200:
+        return "1st Degree AV Block", _margin(f['pr_ms'], 200, 80), "#ce93d8"
+    if hr < 50:
+        return ("Sinus Bradycardia" if p_ok else "Junctional Bradycardia"), _margin(hr, 50, 15), "#4fc3f7"
+    if hr > 100:
+        if qrs >= 120:
+            return "Wide-Complex Tachycardia", _margin(qrs, 120, 60), "#ffb74d"
+        return "Sinus Tachycardia", _margin(hr, 100, 40), "#ffb74d"
+    if p_ok and cv < 0.10:
+        return "Normal Sinus Rhythm", _margin(cv, 0.10, 0.10), "#00e676"
+    if p_ok:
+        return "Sinus Arrhythmia", _margin(cv, 0.10, 0.10), "#a5d6a7"
+    return "Unclassified Rhythm", 0.5, "#90a4ae"
+
 
 def classify(signal: np.ndarray, sample_rate: int = 500) -> ClassificationResult:
-    feats = extract_features(signal, sample_rate)
-
-    if not feats.get('valid'):
+    f = extract_features(signal, sample_rate)
+    if not f.get('valid'):
         return ClassificationResult(
-            label='No Signal', confidence=0.95,
-            hr_bpm=0, rr_mean_ms=0, rr_std_ms=0, qt_ms=0,
-            st_level=0, p_present=False, qrs_wide=False,
-            alerts=['Cannot detect QRS complexes'],
-            color='#607d8b'
-        )
+            label='No Signal', confidence=0.0, hr_bpm=0, rr_mean_ms=0, rr_std_ms=0,
+            qt_ms=0, st_level=0, p_present=False, qrs_wide=False,
+            alerts=['Cannot detect QRS complexes'], color='#607d8b')
 
-    hr        = feats['hr']
-    rr_mean   = feats['rr_mean']
-    rr_std    = feats['rr_std']
-    qrs_ms    = feats['qrs_ms']
-    p_energy  = feats['p_energy']
-    st_level  = feats['st_level']
-    qt_ms     = feats['qt_ms']
-    rr_cv     = rr_std / rr_mean if rr_mean > 0 else 0   # coefficient of variation
-
-    p_present = p_energy > 0.04
-    qrs_wide  = qrs_ms > 120
-
+    label, conf, color = _classify_rhythm(f)
     alerts = []
-    label, conf, color = _classify_rhythm(hr, rr_cv, p_present, qrs_wide,
-                                          st_level, qt_ms, alerts)
-
-    # Additional alerts
-    if qt_ms > 500:
-        alerts.append(f"Prolonged QTc {qt_ms:.0f} ms — Torsades risk")
-    if st_level > 0.15:
-        alerts.append(f"ST elevation {st_level*1000:.0f} μV — Ischemia?")
-    if st_level < -0.10:
-        alerts.append(f"ST depression {abs(st_level)*1000:.0f} μV")
-    if hr > 0 and (hr < 40 or hr > 180):
-        alerts.append(f"Extreme heart rate: {hr:.0f} bpm")
+    # QTc isn't meaningful when the QRS itself is wide (the QT then includes the wide QRS)
+    if f['qtc_ms'] > 500 and f['qrs_ms'] < 120:
+        alerts.append(f"Prolonged QTc {f['qtc_ms']:.0f} ms — torsades risk")
+    st_ok = f['hr'] <= 150
+    if st_ok and f['st_level'] >= 0.10:
+        alerts.append(f"ST elevation {f['st_level'] * 1000:.0f} µV — ischemia?")
+    if st_ok and f['st_level'] <= -0.10:
+        alerts.append(f"ST depression {abs(f['st_level']) * 1000:.0f} µV")
+    if f['hr'] < 40 or f['hr'] > 180:
+        alerts.append(f"Extreme heart rate: {f['hr']:.0f} bpm")
+    if f['wide_fraction'] >= 0.6 and f['hr'] >= 100:
+        alerts.append("Wide-complex tachycardia — treat as VT until proven otherwise")
 
     return ClassificationResult(
-        label=label, confidence=conf,
-        hr_bpm=hr, rr_mean_ms=rr_mean, rr_std_ms=rr_std,
-        qt_ms=qt_ms, st_level=st_level,
-        p_present=p_present, qrs_wide=qrs_wide,
-        alerts=alerts, color=color
-    )
-
-
-def _classify_rhythm(hr, rr_cv, p_present, qrs_wide, st_level, qt_ms, alerts):
-    # Ventricular Tachycardia: fast + wide QRS
-    if hr > 120 and qrs_wide:
-        alerts.append("Wide-complex tachycardia — V-Tach protocol")
-        return "Ventricular Tachycardia", 0.88, "#ff1744"
-
-    # AFib: irregularly irregular (even with partial P present due to noise)
-    if rr_cv > 0.15:
-        alerts.append("Irregularly irregular rhythm — AFib")
-        return "Atrial Fibrillation", 0.84, "#ef5350"
-
-    # STEMI
-    if st_level > 0.15:
-        alerts.append("Significant ST elevation — Possible STEMI")
-        return "ST Elevation", 0.80, "#ff6d00"
-
-    # Bradycardia
-    if hr < 50:
-        if not p_present:
-            alerts.append("Junctional or escape rhythm")
-            return "Junctional Bradycardia", 0.75, "#4fc3f7"
-        return "Sinus Bradycardia", 0.90, "#4fc3f7"
-
-    # Tachycardia
-    if hr > 110:
-        if qrs_wide:
-            return "Wide-Complex Tachycardia", 0.78, "#ffb74d"
-        return "Sinus Tachycardia", 0.88, "#ffb74d"
-
-    # 1st degree block (slightly slow + regular)
-    if 55 < hr < 75 and rr_cv < 0.06 and p_present:
-        return "Normal Sinus Rhythm", 0.92, "#00e676"
-
-    # Irregular but P present → sinus arrhythmia
-    if rr_cv > 0.10 and p_present:
-        return "Sinus Arrhythmia", 0.78, "#a5d6a7"
-
-    if p_present:
-        return "Normal Sinus Rhythm", 0.92, "#00e676"
-
-    return "Unclassified Rhythm", 0.50, "#90a4ae"
-
-
-# ── Optional CNN model (loads if available) ──────────────────────────────────
-
-_cnn_model = None
-
-
-def load_cnn_model(path: str) -> bool:
-    """Load a pre-trained PyTorch model from disk."""
-    global _cnn_model
-    try:
-        import torch
-        _cnn_model = torch.load(path, map_location='cpu')
-        _cnn_model.eval()
-        return True
-    except Exception:
-        return False
-
-
-def cnn_available() -> bool:
-    return _cnn_model is not None
+        label=label, confidence=conf, hr_bpm=f['hr'], rr_mean_ms=f['rr_mean'],
+        rr_std_ms=f['rr_std'], qt_ms=f['qtc_ms'], st_level=f['st_level'],
+        p_present=f['p_fraction'] >= 0.6, qrs_wide=f['qrs_ms'] >= 120,
+        alerts=alerts, color=color, qrs_ms=f['qrs_ms'], pr_ms=f['pr_ms'], qt_raw_ms=f['qt_ms'])

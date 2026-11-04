@@ -111,6 +111,9 @@ def generate_ecg(duration_sec: float, params: ECGParameters,
     p = params
     if p.rhythm == RhythmType.HEART_BLOCK:
         p = ECGParameters(**{**params.__dict__, 'pr_interval': max(params.pr_interval, 0.28)})
+    elif p.rhythm == RhythmType.STEMI and params.st_elevation < 0.10:
+        # the STEMI rhythm should show ST elevation even with the ST slider at zero
+        p = ECGParameters(**{**params.__dict__, 'st_elevation': 0.25})
 
     rr_list = _build_rr(p, duration_sec, rng)
     r_peaks = []

@@ -99,6 +99,21 @@ def _synth_alarm(dur=1.0):
     s = 0.45 * np.sin(2 * np.pi * np.cumsum(f) / SAMPLE_RATE)
     return _env(s, 0.01, 0.05)
 
+def _synth_alarm_pattern(priority='high'):
+    """IEC 60601-1-8 style bursts: high = 3+2 pulses at ~990 Hz, medium = 3 pulses at ~660 Hz."""
+    f0, gaps = (988, [0, .12, .24, .52, .64]) if priority == 'high' else (660, [0, .20, .40])
+    dur = gaps[-1] + 0.16
+    out = np.zeros(int(SAMPLE_RATE * dur))
+    for g in gaps:
+        tone = _env(0.5 * (np.sin(2*np.pi*f0*np.arange(int(SAMPLE_RATE*.1))/SAMPLE_RATE)
+                           + 0.3*np.sin(2*np.pi*3*f0*np.arange(int(SAMPLE_RATE*.1))/SAMPLE_RATE)), .008, .03)
+        i = int(g * SAMPLE_RATE); out[i:i+len(tone)] += tone
+    return out
+
+def _spo2_freq(spo2):
+    """Pulse-tone pitch drops about a semitone per SpO2 point below 100 (as on bedside monitors)."""
+    return 880 * 2 ** ((spo2 - 99) / 12)
+
 def _to_sound(arr):
     pcm = (np.clip(arr, -1, 1) * 32767 * _volume).astype(np.int16)
     # pygame mixer may be stereo — duplicate mono to both channels
@@ -134,7 +149,11 @@ def _build_cache():
         'beep_vtach':       _to_sound(_synth_beep(1320, 0.035, 0.65)),
         'heart':       hb  or _to_sound(_synth_heart()),
         'alarm':       al  or _to_sound(_synth_alarm()),
+        'alarm_high':  al  or _to_sound(_synth_alarm_pattern('high')),
+        'alarm_medium':     _to_sound(_synth_alarm_pattern('medium')),
     }
+    for v in range(70, 101):
+        _cache[f'tone_{v}'] = _to_sound(_synth_beep(_spo2_freq(v), 0.06, 0.5))
 
 
 def _worker():
@@ -163,11 +182,13 @@ def set_enabled(v: bool):   global _enabled; _enabled = v
 def set_volume(v: float):   global _volume;  _volume = max(0.0, min(1.0, v))
 
 
-def beat(rhythm_type):
+def beat(rhythm_type, spo2=None):
+    """One QRS tone. With spo2 given, the pitch tracks saturation like a real monitor."""
     if not _enabled or not PYGAME_OK or _mode == 'mute':
         return
     from core.ecg_generator import RhythmType
-    if   rhythm_type == RhythmType.VTACH:      bkey = 'beep_vtach'
+    if spo2 is not None:                         bkey = f'tone_{max(70, min(100, int(spo2)))}'
+    elif rhythm_type == RhythmType.VTACH:       bkey = 'beep_vtach'
     elif rhythm_type == RhythmType.BRADYCARDIA: bkey = 'beep_brady'
     elif rhythm_type == RhythmType.TACHYCARDIA: bkey = 'beep_tachy'
     else:                                        bkey = 'beep_normal'
@@ -177,15 +198,21 @@ def beat(rhythm_type):
 
 
 _alarm_thread = None
+_alarm_priority = 'high'
 
-def start_alarm():
-    global _alarm_on, _alarm_thread
+def start_alarm(priority='high'):
+    """Loop an alarm pattern: 'high' repeats every ~2.5 s, 'medium' every ~6 s."""
+    global _alarm_on, _alarm_thread, _alarm_priority
+    _alarm_priority = priority
     if _alarm_on: return
     _alarm_on = True
     def _loop():
         while _alarm_on and PYGAME_OK and _enabled:
-            _enq('alarm')
-            time.sleep(1.1)
+            pr = _alarm_priority
+            _enq('alarm_' + pr)
+            for _ in range(25 if pr == 'high' else 60):
+                if not _alarm_on or _alarm_priority != pr: break
+                time.sleep(0.1)
     _alarm_thread = threading.Thread(target=_loop, daemon=True)
     _alarm_thread.start()
 

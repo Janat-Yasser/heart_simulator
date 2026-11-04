@@ -14,14 +14,15 @@ from PyQt5.QtGui import (
 )
 
 # ── Design tokens ─────────────────────────────────────────────────────────────
-BG    = "#FAFBFC"; BG2 = "#F0F2F5"; BG3 = "#E8ECF0"
-WHITE = "#FFFFFF"; BORDER = "#E2E6EA"; BORDER2 = "#CDD3DA"
-CRIM  = "#C41E3A"; CRIM2  = "#A01830"
-CRIM_L = "#FDEEF1"; CRIM_M = "#F5C2CA"
-INK   = "#2D3142"; INK2 = "#4A5568"; INK3 = "#718096"; MUTED = "#A0AABB"
-OK    = "#0BAB60"; WARN  = "#E67E22"; DANGER = "#C41E3A"; INFO  = "#2563EB"
-FNT_UI   = "'SF Pro Display', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif"
-FNT_MONO = "'JetBrains Mono', 'Fira Code', Consolas, monospace"
+# Dark monitor palette (matches ui/monitor.py)
+BG    = "#000000"; BG2 = "#0F1318"; BG3 = "#1E242B"
+WHITE = "#080A0D"; BORDER = "#23282E"; BORDER2 = "#3A424C"
+CRIM  = "#39FF7A"; CRIM2  = "#2BC45E"
+CRIM_L = "#2A0B0B"; CRIM_M = "#6B1C1C"
+INK   = "#E8EEF2"; INK2 = "#C3CBD3"; INK3 = "#8A949E"; MUTED = "#66707A"
+OK    = "#39FF7A"; WARN  = "#FFC400"; DANGER = "#FF2E2E"; INFO  = "#3FD8FF"
+FNT_UI   = "Segoe UI"
+FNT_MONO = "Bahnschrift"
 FNT_SER  = "Georgia, 'Times New Roman', serif"
 
 
@@ -148,14 +149,14 @@ class AIPanel(QFrame):
         lo.setContentsMargins(20, 16, 20, 16)
         lo.setSpacing(12)
 
-        lo.addWidget(label("RHYTHM ANALYSIS (RULE-BASED)", 8, color=MUTED))
+        lo.addWidget(label("What the analysis measured on the last 8 seconds", 9, color=MUTED))
 
         self._badge = QLabel("Initialising…")
         self._badge.setFont(QFont(FNT_UI, 14, QFont.Bold))
         self._badge.setAlignment(Qt.AlignCenter)
         self._badge.setStyleSheet(
-            f"color:{OK}; background:{OK}18; "
-            f"border:1.5px solid {OK}55; "
+            f"color:{OK}; background:rgba(57,255,122,30); "
+            f"border:1.5px solid rgba(57,255,122,110); "
             f"border-radius:10px; padding:10px 20px;"
         )
         lo.addWidget(self._badge)
@@ -213,9 +214,10 @@ class AIPanel(QFrame):
 
     def update(self, r):
         self._badge.setText(r.label)
+        c = QColor(r.color)
         self._badge.setStyleSheet(
-            f"color:{r.color}; background:{r.color}15; "
-            f"border:1.5px solid {r.color}60; "
+            f"color:{r.color}; background:rgba({c.red()},{c.green()},{c.blue()},30); "
+            f"border:1.5px solid rgba({c.red()},{c.green()},{c.blue()},110); "
             f"border-radius:10px; padding:10px 20px; "
             f"font-size:14px; font-weight:700;"
         )
@@ -257,7 +259,7 @@ class ConductionDiagram(QWidget):
         t2 = QTimer(self); t2.timeout.connect(self._fade); t2.start(30)
 
         self._NODES = [
-            ("SA Node",       0.50, 0.07, CRIM, "60–100 bpm initiator"),
+            ("SA Node",       0.50, 0.07, "#FF5A5A", "60–100 bpm initiator"),
             ("AV Node",       0.50, 0.35, INFO, "~120 ms delay"),
             ("Bundle of His", 0.50, 0.57, WARN, "splits L / R"),
             ("LBB",           0.28, 0.80, OK,   "left branch"),

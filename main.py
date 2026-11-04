@@ -1,740 +1,608 @@
 """
-Virtual Heart Simulator v3 — main.py
-White + crimson clinical monitor. Full cardiac simulation desktop app.
+CardioSim: a bedside patient monitor you can teach with.
+
+A simulated patient on a monitor modelled on real ICU monitors: lead II ECG,
+SpO2 pleth and respiration sweeping across a black screen, numerics measured
+from the waveform, alarms ranked red / yellow / cyan, a manual blood-pressure
+cuff, printable rhythm strips and a rhythm quiz.
 
 Run:
     python main.py
 
 Install:
-    pip install PyQt5 pyqtgraph numpy scipy pygame
-    pip install PyOpenGL PyOpenGL_accelerate   # optional, for 3D heart
+    pip install -r requirements.txt
+
+Keys: F freeze, Space pause alarm audio, N start NIBP, P print strip, Q quiz.
+Everything shown is simulated for teaching; it is not a medical device.
 """
 
-import sys, os, math
+import os
+import sys
+import time
+
 import numpy as np
+from PyQt5.QtCore import Qt, QTimer, QSettings
+from PyQt5.QtGui import QColor, QPalette, QPixmap, QKeySequence
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QComboBox, QSlider, QPushButton, QFrame, QGridLayout,
-    QSplitter, QStackedWidget, QSizePolicy, QScrollArea,
-    QCheckBox, QProgressBar
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QComboBox, QSlider, QPushButton, QFrame, QStackedWidget, QCheckBox,
+    QDialog, QScrollArea, QShortcut, QGridLayout, QSizePolicy,
 )
-from PyQt5.QtCore import Qt, QTimer, QObject, QThread, pyqtSignal
-from PyQt5.QtGui import (
-    QFont, QColor, QPalette, QPainter, QPen, QBrush, QLinearGradient,
-    QIcon, QPainterPath, QPixmap
-)
-import pyqtgraph as pg
 
-pg.setConfigOption('background', '#FFFFFF')
-pg.setConfigOption('foreground', '#2D3142')
-
-from core.ecg_generator import (
-    ECGParameters, RhythmType, RHYTHM_INFO, generate_ecg
-)
+from core.ecg_generator import ECGParameters, RhythmType, generate_ecg, get_rhythm_hr
+from core.vitals import VITALS, generate_pleth, generate_resp, pulse_rate
+from core import alarms as AL
+from core import quiz as QZ
 from ai.classifier import classify, extract_features
 import audio.sound_engine as snd
-from ui.widgets import (
-    label, hdiv, spacer,
-    PulseDot, StatTile, AIPanel, ConductionDiagram
+from ui.monitor import (
+    SweepChannel, ParamBox, AlarmBar, font, family,
+    SCREEN, BEZEL, RULE, KEY, KEY_HI, KEY_TXT, DIM,
+    ECG, SPO2, RESP, NIBP, ALARM_RED, ALARM_YEL,
 )
+from ui.widgets import AIPanel, ConductionDiagram
 from ui.heart_page import HeartPage
+from ui.strip import render_strip
 
-# ── Tokens ────────────────────────────────────────────────────────────────────
-BG = "#FAFBFC"; BG2 = "#F0F2F5"; BG3 = "#E8ECF0"
-WHITE = "#FFFFFF"; BORDER = "#E2E6EA"; BORDER2 = "#CDD3DA"
-CRIM = "#C41E3A"; CRIM2 = "#A01830"; CRIM_L = "#FDEEF1"
-ECG_RED = "#E8192C"; ECG_RED2 = "#FF6375"
-INK = "#2D3142"; INK2 = "#4A5568"; INK3 = "#718096"; MUTED = "#A0AABB"
-OK = "#0BAB60"; WARN = "#E67E22"; DANGER = "#C41E3A"; INFO = "#2563EB"
-FNT_UI = "'SF Pro Display', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif"
-FNT_MONO = "'JetBrains Mono', 'Fira Code', Consolas, monospace"
-FNT_SER = "Georgia, 'Times New Roman', serif"
+FS = 500
+SWEEP_S = 8            # seconds across the screen
+GEN_S = 90.0           # seconds generated per rhythm, then looped
+HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-# ── Regen worker ──────────────────────────────────────────────────────────────
-class RegenWorker(QObject):
-    finished = pyqtSignal(object, object, object)
-    def __init__(self, params, dur): super().__init__(); self.p = params; self.d = dur
-    def run(self): self.finished.emit(*generate_ecg(self.d, self.p))
+def lbl(text, size=13, color=KEY_TXT, kind="ui", bold=False, wrap=False):
+    w = QLabel(text)
+    w.setWordWrap(wrap)
+    w.setFont(font(size, kind, bold))
+    w.setStyleSheet(f"color:{color}; background:transparent;")
+    return w
 
 
-# ── Nav button ────────────────────────────────────────────────────────────────
-class NavBtn(QPushButton):
-    def __init__(self, icon_char, text, idx, parent_fn):
-        super().__init__()
-        self._icon = icon_char; self._text = text; self._idx = idx; self._sel = False
-        self.clicked.connect(lambda: parent_fn(idx))
-        self.setFixedHeight(44)
-        self.setCursor(Qt.PointingHandCursor)
+# ── teaching pages ───────────────────────────────────────────────────────────
 
-    def set_selected(self, v):
-        self._sel = v; self.update()
-
-    def paintEvent(self, _):
-        p = QPainter(self); p.setRenderHint(QPainter.Antialiasing)
-        W, H = self.width(), self.height()
-        if self._sel:
-            bg = QColor(CRIM_L)
-            p.setBrush(QBrush(bg)); p.setPen(Qt.NoPen)
-            p.drawRoundedRect(6, 4, W - 12, H - 8, 8, 8)
-        icon_col = QColor(CRIM if self._sel else INK3)
-        text_col = QColor(CRIM if self._sel else INK2)
-        p.setPen(QPen(icon_col)); p.setFont(QFont(FNT_UI, 14))
-        p.drawText(14, 0, 24, H, Qt.AlignVCenter, self._icon)
-        p.setPen(QPen(text_col)); p.setFont(QFont(FNT_UI, 10, QFont.Bold if self._sel else QFont.Normal))
-        p.drawText(42, 0, W - 48, H, Qt.AlignVCenter, self._text)
-
-
-# ── Sidebar ───────────────────────────────────────────────────────────────────
-class Sidebar(QFrame):
-    page_changed = pyqtSignal(int)
-
+class AnalysisPage(QWidget):
     def __init__(self):
         super().__init__()
-        self.setObjectName("Sidebar")
-        self.setFixedWidth(200)
-        lo = QVBoxLayout(self)
-        lo.setContentsMargins(10, 20, 10, 20)
-        lo.setSpacing(4)
+        lo = QHBoxLayout(self); lo.setContentsMargins(22, 18, 22, 18); lo.setSpacing(22)
+        left = QVBoxLayout(); left.setSpacing(10)
+        left.addWidget(lbl("Rhythm analysis", 24, NIBP, "num", True))
+        left.addWidget(lbl("A rule-based reader looks at the same 8 seconds you see: it finds each QRS, "
+                           "then measures rate, regularity, P waves, PR, QRS width, ST and QT.", 13, DIM, wrap=True))
+        self.panel = AIPanel()
+        left.addWidget(self.panel); left.addStretch()
+        right = QVBoxLayout(); right.setSpacing(8)
+        right.addWidget(lbl("Conduction", 24, NIBP, "num", True))
+        right.addWidget(lbl("Each beat travels SA node, AV node, His bundle, bundle branches.", 13, DIM, wrap=True))
+        self.cond = ConductionDiagram()
+        right.addWidget(self.cond, 1)
+        for name, desc, col in [
+            ("SA node", "the natural pacemaker, 60 to 100 a minute", "#FF5A5A"),
+            ("AV node", "holds the impulse back about 120 ms: that pause is the PR interval", SPO2),
+            ("Bundle of His", "carries it into the ventricles, then splits left and right", ALARM_YEL),
+            ("Bundle branches", "fast Purkinje fibres: a narrow QRS means they did the work", ECG),
+        ]:
+            r = QLabel(f"<span style='color:{col}'>●</span>&nbsp; <b style='color:{NIBP}'>{name}</b>"
+                       f"&nbsp; <span style='color:{DIM}'>{desc}</span>")
+            r.setFont(font(13, "ui")); r.setWordWrap(True)
+            right.addWidget(r)
+        lo.addLayout(left, 5); lo.addLayout(right, 4)
 
-        # Logo
-        logo = QLabel("♥")
-        logo.setFont(QFont(FNT_SER, 28))
-        logo.setStyleSheet(f"color:{CRIM}; background:transparent;")
-        logo.setAlignment(Qt.AlignCenter)
-        app_name = QLabel("CardioSim")
-        app_name.setFont(QFont(FNT_SER, 15, QFont.Bold))
-        app_name.setStyleSheet(f"color:{INK}; background:transparent;")
-        app_name.setAlignment(Qt.AlignCenter)
-        version = QLabel("v3.1 · Educational simulator")
-        version.setFont(QFont(FNT_UI, 8))
-        version.setStyleSheet(f"color:{MUTED}; background:transparent;")
-        version.setAlignment(Qt.AlignCenter)
-        lo.addWidget(logo); lo.addWidget(app_name); lo.addWidget(version)
-        lo.addSpacing(16)
-        lo.addWidget(self._hdiv())
 
-        # Nav items
-        pages = [
-            ("♥", "Monitor",    0),
-            ("⚡", "Controls",  1),
-            ("🤖", "Rhythm Analysis",2),
-            ("⚙", "Conduction", 3),
-            ("◎", "3D Heart",   4),
-        ]
-        lo.addSpacing(8)
-        self._btns = []
-        for icon, txt, idx in pages:
-            btn = NavBtn(icon, txt, idx, self._on_click)
-            lo.addWidget(btn)
-            self._btns.append(btn)
+class SetupPage(QWidget):
+    def __init__(self, win):
+        super().__init__()
+        self.win = win
+        p = win.params
+        lo = QVBoxLayout(self); lo.setContentsMargins(26, 20, 26, 20); lo.setSpacing(14)
+        lo.addWidget(lbl("Setup", 24, NIBP, "num", True))
+        grid = QGridLayout(); grid.setHorizontalSpacing(18); grid.setVerticalSpacing(16)
+        lo.addLayout(grid)
+        row = [0]
 
+        def slider(name, lo_, hi_, val, fmt, on):
+            s = QSlider(Qt.Horizontal); s.setRange(lo_, hi_); s.setValue(val)
+            v = lbl(fmt(val), 16, ECG, "num", True); v.setMinimumWidth(80)
+            def cb(x): v.setText(fmt(x)); on(x)
+            s.valueChanged.connect(cb)
+            grid.addWidget(lbl(name, 14), row[0], 0); grid.addWidget(s, row[0], 1); grid.addWidget(v, row[0], 2)
+            row[0] += 1
+            return s
+
+        def regen(): win.schedule_regen()
+        slider("R-wave amplitude", 30, 200, int(p.r_amp * 100), lambda x: f"{x/100:.1f} mV",
+               lambda x: (setattr(p, 'r_amp', x / 100), regen()))
+        slider("ST shift", -20, 40, int(p.st_elevation * 100), lambda x: f"{x/100:+.2f} mV",
+               lambda x: (setattr(p, 'st_elevation', x / 100), regen()))
+        def noise(x):
+            p.baseline_noise = x / 1000; p.muscle_noise = x / 2000; regen()
+        slider("Signal noise", 0, 80, int(p.baseline_noise * 1000), lambda x: f"{x}", noise)
+        slider("HR alarm low", 30, 70, win.hr_low, lambda x: f"{x} bpm", lambda x: win.set_limits(low=x))
+        slider("HR alarm high", 90, 180, win.hr_high, lambda x: f"{x} bpm", lambda x: win.set_limits(high=x))
+        slider("Volume", 0, 100, 70, lambda x: f"{x}%", lambda x: snd.set_volume(x / 100))
+
+        mode = QComboBox()
+        for m, d in [("beep", "QRS tone"), ("heart", "Heart sounds"), ("both", "Tone and heart sounds"), ("mute", "Silent")]:
+            mode.addItem(d, m)
+        mode.currentIndexChanged.connect(lambda i: snd.set_mode(mode.itemData(i)))
+        grid.addWidget(lbl("Beat sound", 14), row[0], 0); grid.addWidget(mode, row[0], 1); row[0] += 1
+        self.pitch = QCheckBox("Tone pitch follows SpO₂ (falls as saturation drops)")
+        self.pitch.setChecked(True)
+        grid.addWidget(self.pitch, row[0], 1); row[0] += 1
+        lo.addWidget(lbl("Sound files: put heartbeat.wav, beep.wav or alarm.wav in assets/sounds/ to replace "
+                         "the synthesised ones.", 12, DIM, wrap=True))
         lo.addStretch()
-        lo.addWidget(self._hdiv())
-        lo.addSpacing(8)
-
-        # Status dot
-        self._status_row = QHBoxLayout()
-        self._sdot = QLabel("●")
-        self._sdot.setStyleSheet(f"color:{OK}; font-size:10px;")
-        self._slbl = QLabel("Signal active")
-        self._slbl.setFont(QFont(FNT_UI, 8)); self._slbl.setStyleSheet(f"color:{INK3};")
-        self._status_row.addWidget(self._sdot); self._status_row.addWidget(self._slbl); self._status_row.addStretch()
-        lo.addLayout(self._status_row)
-
-        self._select(0)
-
-    def _hdiv(self):
-        f = QFrame(); f.setFrameShape(QFrame.HLine)
-        f.setStyleSheet(f"background:{BORDER}; max-height:1px;")
-        return f
-
-    def _on_click(self, idx):
-        self._select(idx)
-        self.page_changed.emit(idx)
-
-    def _select(self, idx):
-        for i, btn in enumerate(self._btns):
-            btn.set_selected(i == idx)
-
-    def set_status(self, active: bool, text: str):
-        col = OK if active else DANGER
-        self._sdot.setStyleSheet(f"color:{col}; font-size:10px;")
-        self._slbl.setText(text)
 
 
-# ── Monitor page ──────────────────────────────────────────────────────────────
-class MonitorPage(QWidget):
-    def __init__(self):
-        super().__init__()
+class StripDialog(QDialog):
+    def __init__(self, img, path, parent):
+        super().__init__(parent)
+        self.setWindowTitle("Rhythm strip")
         lo = QVBoxLayout(self)
-        lo.setContentsMargins(20, 16, 20, 16)
-        lo.setSpacing(12)
+        pic = QLabel(); pic.setPixmap(QPixmap.fromImage(img).scaledToWidth(min(img.width(), 1180), Qt.SmoothTransformation))
+        lo.addWidget(pic)
+        row = QHBoxLayout()
+        row.addWidget(lbl(f"Saved to {path}", 12, DIM)); row.addStretch()
+        b = QPushButton("Close"); b.setObjectName("Key"); b.clicked.connect(self.accept)
+        row.addWidget(b); lo.addLayout(row)
+        self.setStyleSheet(f"background:{BEZEL};")
 
-        # ── Top status bar ─────────────────────────────────────────────────
-        top = QHBoxLayout(); top.setSpacing(12)
 
-        # Rhythm badge
-        self.rhythm_badge = QLabel("● NORMAL SINUS RHYTHM")
-        self.rhythm_badge.setFont(QFont(FNT_UI, 11, QFont.Bold))
-        self.rhythm_badge.setAlignment(Qt.AlignCenter)
-        self.rhythm_badge.setStyleSheet(f"""
-            color:{OK}; background:{OK}15;
-            border:1.5px solid {OK}55; border-radius:10px; padding:8px 20px;
-        """)
+# ── quiz strip ───────────────────────────────────────────────────────────────
 
-        # Beat indicator + HR
-        self.beat_dot = PulseDot(22)
-        self.hr_big   = QLabel("—")
-        self.hr_big.setFont(QFont(FNT_MONO, 32, QFont.Bold))
-        self.hr_big.setStyleSheet(f"color:{INK}; background:transparent;")
-        self.hr_unit  = QLabel("bpm")
-        self.hr_unit.setFont(QFont(FNT_UI, 11))
-        self.hr_unit.setStyleSheet(f"color:{MUTED}; background:transparent;")
-        self.hr_unit.setAlignment(Qt.AlignBottom)
-
-        hr_row = QHBoxLayout()
-        hr_row.addWidget(self.beat_dot, alignment=Qt.AlignVCenter)
-        hr_row.addSpacing(4)
-        hr_row.addWidget(self.hr_big, alignment=Qt.AlignVCenter)
-        hr_row.addWidget(self.hr_unit, alignment=Qt.AlignBottom)
-
-        top.addWidget(self.rhythm_badge)
-        top.addStretch()
-        top.addLayout(hr_row)
+class QuizBar(QFrame):
+    def __init__(self, win):
+        super().__init__()
+        self.win = win
+        self.setObjectName("Quiz")
+        lo = QVBoxLayout(self); lo.setContentsMargins(14, 10, 14, 12); lo.setSpacing(8)
+        top = QHBoxLayout()
+        self.q = lbl("Name this rhythm", 18, NIBP, "num", True)
+        self.score = lbl("", 14, DIM)
+        top.addWidget(self.q); top.addStretch(); top.addWidget(self.score)
         lo.addLayout(top)
-
-        # ── Stat tiles ─────────────────────────────────────────────────────
-        tile_row = QHBoxLayout(); tile_row.setSpacing(10)
-        self.t_rr  = StatTile("RR Interval", "ms",   CRIM)
-        self.t_qt  = StatTile("QTc",          "ms",   INFO)
-        self.t_amp = StatTile("R Amplitude",  "mV",   OK)
-        self.t_spo = StatTile("SpO₂ (sim)",   "%",    WARN)
-        self.t_spo.set_value("99", OK)
-        for t in (self.t_rr, self.t_qt, self.t_amp, self.t_spo):
-            tile_row.addWidget(t)
-        lo.addLayout(tile_row)
-
-        # ── ECG plots ──────────────────────────────────────────────────────
-        ecg_card = QFrame(); ecg_card.setObjectName("ECGCard")
-        ecl = QVBoxLayout(ecg_card); ecl.setContentsMargins(16, 12, 16, 12); ecl.setSpacing(6)
-
-        # Label bar
-        lbar = QHBoxLayout()
-        lbar.addWidget(label("LEAD II", 8, color=MUTED))
-        lbar.addWidget(label("500 Hz  ·  25 mm/s  ·  10 mm/mV", 8, color=MUTED))
-        lbar.addStretch()
-        self._speed_lbl = label("Real-time", 8, color=MUTED)
-        lbar.addWidget(self._speed_lbl)
-        ecl.addLayout(lbar)
-
-        # Main plot
-        self._sr     = 500
-        self._disp   = 10
-        self._bufn   = self._sr * self._disp
-        self._buf    = np.zeros(self._bufn)
-        self._tx     = np.linspace(0, self._disp, self._bufn)
-
-        self.plot = pg.PlotWidget()
-        self.plot.setMenuEnabled(False)
-        self.plot.showGrid(x=True, y=True, alpha=0.07)
-        self.plot.setYRange(-0.6, 1.6)
-        self.plot.setXRange(0, self._disp)
-        self.plot.getPlotItem().getViewBox().setMouseEnabled(False, False)
-        for ax in ('left', 'bottom'):
-            self.plot.getAxis(ax).setStyle(tickFont=QFont(FNT_MONO, 8))
-        self.plot.setLabel('left',   'mV',  color=MUTED, size='8pt')
-        self.plot.setLabel('bottom', 'sec', color=MUTED, size='8pt')
-        # Draw grid lines in crimson tint
-        self.plot.getAxis('left').setPen(pg.mkPen(color=BORDER))
-        self.plot.getAxis('bottom').setPen(pg.mkPen(color=BORDER))
-
-        # ECG curve — bold crimson
-        self._curve = self.plot.plot(
-            self._tx, self._buf,
-            pen=pg.mkPen(color=ECG_RED, width=2.2)
-        )
-        # Scan line
-        self._scan = pg.InfiniteLine(
-            pos=self._disp,
-            pen=pg.mkPen(color=BORDER2, width=1, style=Qt.SolidLine)
-        )
-        self.plot.addItem(self._scan)
-        ecl.addWidget(self.plot, stretch=3)
-
-        # Rhythm strip
-        ecl.addWidget(label("RHYTHM STRIP", 7, color=MUTED))
-        self._strip4  = self._sr * 4
-        self._strip   = np.zeros(self._strip4)
-        self._stx     = np.linspace(0, 4, self._strip4)
-        self.plot2    = pg.PlotWidget()
-        self.plot2.setMenuEnabled(False); self.plot2.setFixedHeight(70)
-        self.plot2.showGrid(x=False, y=False)
-        self.plot2.setYRange(-0.5, 1.3); self.plot2.setXRange(0, 4)
-        self.plot2.getPlotItem().getViewBox().setMouseEnabled(False, False)
-        self.plot2.getAxis('left').setStyle(showValues=False)
-        self.plot2.getAxis('bottom').setStyle(tickFont=QFont(FNT_MONO, 7))
-        self._curve2 = self.plot2.plot(
-            self._stx, self._strip,
-            pen=pg.mkPen(color=ECG_RED2, width=1.4)
-        )
-        ecl.addWidget(self.plot2)
-        lo.addWidget(ecg_card, stretch=1)
+        self.row = QHBoxLayout(); self.row.setSpacing(8)
+        self.btns = []
+        for i in range(4):
+            b = QPushButton(""); b.setObjectName("Answer"); b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _, i=i: win.quiz_answer(i))
+            self.row.addWidget(b); self.btns.append(b)
+        self.next = QPushButton("Next strip"); self.next.setObjectName("KeyOn")
+        self.next.clicked.connect(win.quiz_next)
+        self.row.addWidget(self.next)
+        lo.addLayout(self.row)
+        self.why = lbl("", 14, KEY_TXT); self.why.setWordWrap(True)
+        lo.addWidget(self.why)
 
 
-# ── Controls page ─────────────────────────────────────────────────────────────
-class ControlsPage(QWidget):
-    apply_requested = pyqtSignal()
+# ── main window ──────────────────────────────────────────────────────────────
 
-    def __init__(self, params: ECGParameters):
-        super().__init__()
-        self.params = params
-        lo = QVBoxLayout(self)
-        lo.setContentsMargins(24, 20, 24, 20)
-        lo.setSpacing(14)
-        lo.addWidget(label("Controls", 18, bold=True, color=INK, font=FNT_SER))
-        lo.addWidget(label("Adjust simulation parameters and apply changes.", 10, color=INK3))
-        lo.addWidget(hdiv())
-
-        def section(t): lo.addWidget(label(t.upper(), 8, color=MUTED))
-        def row(): r = QHBoxLayout(); r.setSpacing(10); return r
-
-        # BPM
-        section("Target Heart Rate")
-        r1 = row()
-        self.bpm_sl = QSlider(Qt.Horizontal)
-        self.bpm_sl.setRange(30, 200); self.bpm_sl.setValue(72)
-        self._bpm_v = label("72", 13, bold=True, color=CRIM, font=FNT_MONO)
-        self._bpm_v.setFixedWidth(44)
-        lo.addWidget(label("30", 9, color=MUTED))  # replaced below in proper row
-        r1.addWidget(self.bpm_sl); r1.addWidget(self._bpm_v)
-        lo.addLayout(r1)
-        self.bpm_sl.valueChanged.connect(lambda v: (
-            setattr(params, 'bpm', float(v)), self._bpm_v.setText(str(v))
-        ))
-
-        # Rhythm
-        section("Rhythm Type")
-        self.rhy_cb = QComboBox()
-        for r in RhythmType:
-            _, col, desc = RHYTHM_INFO[r]
-            self.rhy_cb.addItem(r.value, r)
-        lo.addWidget(self.rhy_cb)
-        self.rhy_cb.currentIndexChanged.connect(
-            lambda i: setattr(params, 'rhythm', self.rhy_cb.itemData(i))
-        )
-
-        # R amplitude
-        section("R-Wave Amplitude")
-        r2 = row()
-        self.amp_sl = QSlider(Qt.Horizontal); self.amp_sl.setRange(20, 200); self.amp_sl.setValue(100)
-        self._amp_v = label("1.0", 13, bold=True, color=CRIM, font=FNT_MONO); self._amp_v.setFixedWidth(44)
-        r2.addWidget(self.amp_sl); r2.addWidget(self._amp_v)
-        lo.addLayout(r2)
-        self.amp_sl.valueChanged.connect(lambda v: (
-            setattr(params, 'r_amp', v / 100.0), self._amp_v.setText(f"{v/100:.1f}")
-        ))
-
-        # Noise
-        section("Noise Level")
-        r3 = row()
-        self.noi_sl = QSlider(Qt.Horizontal); self.noi_sl.setRange(0, 80); self.noi_sl.setValue(12)
-        self._noi_v = label("12", 13, bold=True, color=CRIM, font=FNT_MONO); self._noi_v.setFixedWidth(44)
-        r3.addWidget(self.noi_sl); r3.addWidget(self._noi_v)
-        lo.addLayout(r3)
-        def on_n(v):
-            params.baseline_noise = v / 1000.0; params.muscle_noise = v / 2000.0
-            self._noi_v.setText(str(v))
-        self.noi_sl.valueChanged.connect(on_n)
-
-        # ST elevation
-        section("ST Elevation / Depression")
-        r4 = row()
-        self.st_sl = QSlider(Qt.Horizontal); self.st_sl.setRange(-20, 40); self.st_sl.setValue(0)
-        self._st_v = label("+0.00", 13, bold=True, color=CRIM, font=FNT_MONO); self._st_v.setFixedWidth(60)
-        r4.addWidget(self.st_sl); r4.addWidget(self._st_v)
-        lo.addLayout(r4)
-        self.st_sl.valueChanged.connect(lambda v: (
-            setattr(params, 'st_elevation', v / 100.0), self._st_v.setText(f"{v/100:+.2f}")
-        ))
-
-        lo.addWidget(hdiv())
-
-        # Audio
-        lo.addWidget(label("Audio", 18, bold=True, color=INK, font=FNT_SER))
-        ar = row()
-        self.au_cb = QCheckBox("Sound enabled"); self.au_cb.setChecked(True)
-        self.au_cb.stateChanged.connect(lambda s: snd.set_enabled(bool(s)))
-        self.mo_cb = QComboBox()
-        for m, d in [("beep","Monitor beep"),("heart","Heart sounds"),("both","Beep + Heart"),("mute","Mute")]:
-            self.mo_cb.addItem(d, m)
-        self.mo_cb.currentIndexChanged.connect(lambda i: snd.set_mode(self.mo_cb.itemData(i)))
-        ar.addWidget(self.au_cb); ar.addWidget(self.mo_cb)
-        lo.addLayout(ar)
-
-        # Volume
-        vr = row()
-        vr.addWidget(label("Volume", 9, color=INK3))
-        self.vol_sl = QSlider(Qt.Horizontal); self.vol_sl.setRange(0, 100); self.vol_sl.setValue(70)
-        self.vol_sl.valueChanged.connect(lambda v: snd.set_volume(v / 100.0))
-        vr.addWidget(self.vol_sl)
-        lo.addLayout(vr)
-
-        # Sound file hint
-        hint = QLabel(
-            "💡 To use real sounds: create <b>assets/sounds/</b> and place<br>"
-            "<code>heartbeat.wav</code>, <code>beep.wav</code>, <code>alarm.wav</code> inside."
-        )
-        hint.setFont(QFont(FNT_UI, 9)); hint.setWordWrap(True)
-        hint.setStyleSheet(f"""
-            color:{INK3}; background:{BG2};
-            border:1px solid {BORDER}; border-radius:8px; padding:10px;
-        """)
-        lo.addWidget(hint)
-
-        lo.addWidget(hdiv())
-        # Apply
-        self.apply_btn = QPushButton("▶  Apply & Regenerate Signal")
-        self.apply_btn.setObjectName("ApplyBtn")
-        self.apply_btn.clicked.connect(self.apply_requested.emit)
-        self.apply_btn.setCursor(Qt.PointingHandCursor)
-        lo.addWidget(self.apply_btn)
-        lo.addStretch()
-
-
-# ── Main window ───────────────────────────────────────────────────────────────
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("CardioSim  —  Virtual Heart Simulator")
-        self.setMinimumSize(1300, 820)
+        self.setWindowTitle("CardioSim")
+        self.setMinimumSize(1280, 800)
+        self.settings = QSettings("CardioSim", "CardioSim")
 
-        self.params   = ECGParameters()
-        self._sr      = 500
-        self._disp    = 10
-        self._bufn    = self._sr * self._disp
-        self._chunk   = self._sr // 30
-        self._gen_dur = 90.0
+        self.params = ECGParameters()
+        self.hr_low, self.hr_high = AL.HR_LOW, AL.HR_HIGH
+        self._sig = self._pleth = self._resp = None
+        self._peaks, self._amps = [], []
+        self._pos = 0; self._peak_i = 0
+        self._abuf = np.zeros(FS * SWEEP_S)    # what's on screen, for analysis
+        self._filled = 0
+        self._spo2 = 98.0
+        self.result = None; self.features = {}
+        self.alarms = []
+        self._alarm_sound = None
+        self.quiz = None; self._quiz_saved = None
+        self.streak = 0; self.best = int(self.settings.value("best_streak", 0))
+        self._nibp = {"state": "idle", "p": 0.0, "value": None, "at": ""}
 
-        self._gen_sig   = None
-        self._gen_peaks = []
-        self._play_pos  = 0
-        self._peak_ptr  = 0
+        snd.init_audio()
+        self._build()
+        self._style()
+        self._regen_timer = QTimer(self); self._regen_timer.setSingleShot(True)
+        self._regen_timer.timeout.connect(self.regenerate)
+        self.regenerate()
 
-        self._beat_cnt  = 0
-        self._ai_cnt    = 0
-        self._ai_ivl    = self._sr * 4
-        self._elapsed   = 0
+        self._t = QTimer(self); self._t.timeout.connect(self._tick); self._t.start(33)
+        self._a = QTimer(self); self._a.timeout.connect(self._analyse); self._a.start(1000)
+        self._f = QTimer(self); self._f.timeout.connect(self._flash); self._f.start(330)
+        self._n = QTimer(self); self._n.timeout.connect(self._nibp_tick); self._n.start(100)
 
-        self._audio_ok = snd.init_audio()
+        for key, fn in [("F", self.toggle_freeze), ("Space", self.pause_alarms), ("N", self.start_nibp),
+                        ("P", self.print_strip), ("Q", lambda: self.k_quiz.click())]:
+            QShortcut(QKeySequence(key), self, activated=fn)
 
-        self._build_ui()
-        self._apply_style()
-        self._regenerate()
-
-        self._tick_timer = QTimer()
-        self._tick_timer.timeout.connect(self._tick)
-        self._tick_timer.start(33)
-
-    # ── UI ────────────────────────────────────────────────────────────────────
-
-    def _build_ui(self):
-        root = QWidget()
+    # ── layout ───────────────────────────────────────────────────────────────
+    def _build(self):
+        root = QWidget(); root.setObjectName("Bezel")
         self.setCentralWidget(root)
-        rl = QHBoxLayout(root)
-        rl.setContentsMargins(0, 0, 0, 0)
-        rl.setSpacing(0)
+        rl = QVBoxLayout(root); rl.setContentsMargins(14, 14, 14, 10); rl.setSpacing(8)
 
-        # Sidebar
-        self._sidebar = Sidebar()
-        self._sidebar.page_changed.connect(self._switch_page)
-        rl.addWidget(self._sidebar)
+        screen = QFrame(); screen.setObjectName("Screen")
+        sl = QVBoxLayout(screen); sl.setContentsMargins(0, 0, 0, 0); sl.setSpacing(0)
+        self.bar = AlarmBar(); sl.addWidget(self.bar)
+        self.pages = QStackedWidget(); sl.addWidget(self.pages, 1)
+        rl.addWidget(screen, 1)
 
-        # Separator
-        sep = QFrame(); sep.setFrameShape(QFrame.VLine)
-        sep.setStyleSheet(f"background:{BORDER}; max-width:1px;")
-        rl.addWidget(sep)
+        # page 0: the monitor
+        mon = QWidget(); ml = QHBoxLayout(mon); ml.setContentsMargins(0, 0, 0, 0); ml.setSpacing(0)
+        waves = QVBoxLayout(); waves.setSpacing(0)
+        self.ch_ecg = SweepChannel("II", ECG, FS, SWEEP_S, (-0.9, 1.7), "x1   25 mm/s", width=1.9)
+        self.ch_pl = SweepChannel("Pleth", SPO2, FS, SWEEP_S, (-0.15, 1.45), "")
+        self.ch_rs = SweepChannel("Resp", RESP, FS, SWEEP_S, (-1.5, 1.5), "x1")
+        waves.addWidget(self.ch_ecg, 5); waves.addWidget(self.ch_pl, 3); waves.addWidget(self.ch_rs, 2)
+        self.quizbar = QuizBar(self); self.quizbar.hide()
+        waves.addWidget(self.quizbar)
+        ml.addLayout(waves, 7)
+        vr = QFrame(); vr.setFixedWidth(1); vr.setStyleSheet(f"background:{RULE};"); ml.addWidget(vr)
 
-        # Page stack
-        self._stack = QStackedWidget()
-        rl.addWidget(self._stack, stretch=1)
+        nums = QVBoxLayout(); nums.setSpacing(0)
+        self.b_hr = ParamBox("HR", ECG, "bpm", (self.hr_high, self.hr_low), big=1.15, heart=True)
+        self.b_sp = ParamBox("SpO₂", SPO2, "%  (sim)", (100, AL.SPO2_LOW))
+        self.b_bp = ParamBox("NIBP", NIBP, "mmHg  (sim)", big=0.8)
+        low = QHBoxLayout(); low.setSpacing(0)
+        self.b_rr = ParamBox("RESP", RESP, "rpm", big=0.9)
+        self.b_st = ParamBox("QTc", ECG, "ms", big=0.75)
+        low.addWidget(self.b_rr); low.addWidget(self.b_st)
+        nums.addWidget(self.b_hr, 4); nums.addWidget(self.b_sp, 3); nums.addWidget(self.b_bp, 3)
+        lw = QWidget(); lw.setLayout(low); nums.addWidget(lw, 2)
+        nw = QWidget(); nw.setLayout(nums); nw.setMinimumWidth(360)
+        ml.addWidget(nw, 3)
+        self.pages.addWidget(mon)
 
-        # ── Page 0: Monitor ───────────────────────────────────────────────
-        self._monitor = MonitorPage()
-        self._stack.addWidget(self._monitor)
+        self.analysis = AnalysisPage(); self.pages.addWidget(self.analysis)
+        self.heart = HeartPage(); self.pages.addWidget(self.heart)
+        self.setup = SetupPage(self)
+        sc = QScrollArea(); sc.setWidgetResizable(True); sc.setFrameShape(QFrame.NoFrame); sc.setWidget(self.setup)
+        self.pages.addWidget(sc)
 
-        # ── Page 1: Controls ─────────────────────────────────────────────
-        self._ctrl_page = ControlsPage(self.params)
-        self._ctrl_page.apply_requested.connect(self._regenerate)
-        scroll1 = QScrollArea()
-        scroll1.setWidgetResizable(True); scroll1.setFrameShape(QFrame.NoFrame)
-        scroll1.setWidget(self._ctrl_page)
-        self._stack.addWidget(scroll1)
+        # softkeys
+        keys = QHBoxLayout(); keys.setSpacing(6)
+        self.rhythm = QComboBox(); self.rhythm.setObjectName("Rhythm")
+        for r in RhythmType:
+            self.rhythm.addItem(QZ.NAMES[r], r)
+        self.rhythm.currentIndexChanged.connect(self._rhythm_changed)
+        keys.addWidget(self.rhythm)
+        minus = QPushButton("−"); plus = QPushButton("+")
+        for b, d in ((minus, -2), (plus, 2)):
+            b.setObjectName("Key"); b.setAutoRepeat(True); b.setFixedWidth(42)
+            b.clicked.connect(lambda _, d=d: self.nudge_rate(d))
+        self.rate = lbl("72 bpm", 15, KEY_TXT, "num", True); self.rate.setAlignment(Qt.AlignCenter)
+        self.rate.setFixedWidth(76)
+        keys.addWidget(minus); keys.addWidget(self.rate); keys.addWidget(plus)
+        self.quiz_hides = [self.rhythm, minus, self.rate, plus]
+        keys.addSpacing(14)
 
-        # ── Page 2: AI ────────────────────────────────────────────────────
-        ai_outer = QWidget()
-        ai_l = QVBoxLayout(ai_outer); ai_l.setContentsMargins(24, 20, 24, 20)
-        ai_l.addWidget(label("Rhythm Analysis", 18, bold=True, color=INK, font="Georgia, serif"))
-        ai_l.addWidget(label("Rule-based morphological classifier · updates every 4 seconds", 10, color=INK3))
-        ai_l.addWidget(hdiv())
-        self._ai_panel = AIPanel()
-        ai_l.addWidget(self._ai_panel)
-        ai_l.addStretch()
-        self._stack.addWidget(ai_outer)
+        def key(text, fn, checkable=False):
+            b = QPushButton(text); b.setObjectName("Key"); b.setCheckable(checkable)
+            b.setCursor(Qt.PointingHandCursor); b.clicked.connect(fn); keys.addWidget(b); return b
+        self.k_freeze = key("Freeze", self.toggle_freeze, True)
+        self.k_pause = key("Pause alarms", self.pause_alarms)
+        key("Start NIBP", self.start_nibp)
+        key("Print strip", self.print_strip)
+        self.k_quiz = key("Rhythm quiz", self.toggle_quiz, True)
+        keys.addStretch()
+        self.navs = []
+        for i, t in enumerate(["Main screen", "Analysis", "Anatomy", "Setup"]):
+            b = key(t, lambda _, i=i: self.show_page(i), True); b.setObjectName("Nav"); self.navs.append(b)
+        self.navs[0].setChecked(True)
+        rl.addLayout(keys)
 
-        # ── Page 3: Conduction ────────────────────────────────────────────
-        cond_outer = QWidget()
-        co_l = QVBoxLayout(cond_outer); co_l.setContentsMargins(24, 20, 24, 20)
-        co_l.addWidget(label("Conduction System", 18, bold=True, color=INK, font="Georgia, serif"))
-        co_l.addWidget(label("Cardiac impulse pathway animated on each beat.", 10, color=INK3))
-        co_l.addWidget(hdiv())
-        self._cond = ConductionDiagram()
-        co_l.addWidget(self._cond, stretch=1)
-        # Legend
-        nodes_info = [
-            ("SA Node",         "Sinoatrial node — natural pacemaker. Fires 60–100 bpm.",    "#C41E3A"),
-            ("AV Node",         "Atrioventricular node. Delays impulse ~120–200 ms.",         "#2563EB"),
-            ("Bundle of His",   "Common bundle — splits into left and right branches.",       "#E67E22"),
-            ("LBB / RBB",       "Left and right bundle branches → Purkinje fibres.",          "#0BAB60"),
-        ]
-        for name, desc, col in nodes_info:
-            r = QHBoxLayout()
-            d = QLabel("●"); d.setStyleSheet(f"color:{col}; font-size:10px;"); d.setFixedWidth(18)
-            b = QLabel(f"<b style='color:{INK2}'>{name}</b>  <span style='color:{INK3}'>{desc}</span>")
-            b.setFont(QFont("SF Pro Display, Segoe UI, Arial", 9)); b.setWordWrap(True)
-            r.addWidget(d); r.addWidget(b); r.addStretch()
-            co_l.addLayout(r)
-        co_l.addStretch()
-        self._stack.addWidget(cond_outer)
-
-        # ── Page 4: 3D Heart ──────────────────────────────────────────────
-        self._heart_page = HeartPage()
-        self._stack.addWidget(self._heart_page)
-
-    # ── Style ─────────────────────────────────────────────────────────────────
-
-    def _apply_style(self):
+    def _style(self):
+        f_ui, f_num = family("ui"), family("num")
         self.setStyleSheet(f"""
-            QMainWindow, QWidget {{
-                background:{BG};
-                color:{INK};
-                font-family:{FNT_UI};
-            }}
-            #Sidebar {{
-                background:{WHITE};
-                border-right:1px solid {BORDER};
-            }}
-            #ECGCard {{
-                background:{WHITE};
-                border:1px solid {BORDER};
-                border-radius:14px;
-            }}
-            QFrame#Card {{
-                background:{WHITE};
-                border:1px solid {BORDER};
-                border-radius:14px;
-            }}
-            #StatTile {{
-                background:{WHITE};
-                border:1px solid {BORDER};
-                border-radius:12px;
-            }}
-            #FeatureCell {{
-                background:{BG2};
-                border:1px solid {BORDER};
-                border-radius:8px;
-            }}
-            QComboBox {{
-                background:{WHITE};
-                border:1.5px solid {BORDER2};
-                border-radius:8px;
-                padding:6px 12px;
-                color:{INK};
-                font-size:11px;
-            }}
-            QComboBox:hover {{ border-color:{CRIM}; }}
-            QComboBox::drop-down {{ border:none; width:24px; }}
-            QComboBox QAbstractItemView {{
-                background:{WHITE}; color:{INK};
-                border:1px solid {BORDER2};
-                selection-background-color:{CRIM_L};
-                selection-color:{CRIM};
-            }}
-            QSlider::groove:horizontal {{
-                background:{BG3}; height:5px; border-radius:3px;
-            }}
-            QSlider::handle:horizontal {{
-                background:{CRIM}; width:16px; height:16px;
-                margin:-6px 0; border-radius:8px;
-            }}
-            QSlider::sub-page:horizontal {{
-                background:{CRIM}; opacity:0.5; border-radius:3px;
-            }}
-            QCheckBox {{ color:{INK2}; font-size:11px; }}
-            QCheckBox::indicator {{
-                width:16px; height:16px;
-                border:1.5px solid {BORDER2};
-                border-radius:4px; background:{WHITE};
-            }}
-            QCheckBox::indicator:checked {{
-                background:{CRIM}; border-color:{CRIM};
-            }}
-            QPushButton {{
-                background:{WHITE}; border:1.5px solid {BORDER2};
-                border-radius:8px; padding:8px 16px;
-                color:{INK}; font-size:11px;
-            }}
-            QPushButton:hover  {{ background:{BG2}; border-color:{BORDER}; }}
-            QPushButton:pressed {{ background:{BG3}; }}
-            #ApplyBtn {{
-                background:{CRIM}; border:none; color:{WHITE};
-                font-weight:bold; font-size:12px; padding:12px;
-                border-radius:10px;
-            }}
-            #ApplyBtn:hover {{ background:{CRIM2}; }}
-            QScrollBar:vertical {{ background:{BG}; width:8px; border-radius:4px; }}
-            QScrollBar::handle:vertical {{ background:{BORDER2}; border-radius:4px; min-height:24px; }}
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height:0px; }}
-            QScrollArea {{ background:{BG}; border:none; }}
-            QProgressBar {{ background:{BG3}; border-radius:3px; border:none; }}
-            QProgressBar::chunk {{ background:{CRIM}; border-radius:3px; }}
+            QWidget {{ background:{SCREEN}; color:{KEY_TXT}; }}
+            #Bezel {{ background:{BEZEL}; }}
+            #Screen {{ background:{SCREEN}; border:1px solid #0A0B0D; border-radius:6px; }}
+            QPushButton#Key, QPushButton#Nav, QPushButton#KeyOn, QComboBox#Rhythm {{
+                background:{KEY}; color:{KEY_TXT}; border:1px solid #2B3139; border-bottom:2px solid #0B0D10;
+                border-radius:5px; padding:9px 14px; font-size:13px; }}
+            QPushButton#Key:hover, QPushButton#Nav:hover, QComboBox#Rhythm:hover {{ background:{KEY_HI}; }}
+            QPushButton#Key:checked {{ background:{NIBP}; color:#000; }}
+            QPushButton#Nav:checked {{ background:{KEY_HI}; color:{NIBP}; border-bottom:2px solid {ECG}; }}
+            QPushButton#KeyOn {{ background:{NIBP}; color:#000; font-weight:600; }}
+            QComboBox#Rhythm {{ min-width:210px; font-family:'{f_num}'; font-size:15px; }}
+            QComboBox::drop-down {{ border:none; width:22px; }}
+            QComboBox QAbstractItemView {{ background:{KEY}; color:{KEY_TXT}; selection-background-color:{KEY_HI};
+                selection-color:{ECG}; border:1px solid #2B3139; }}
+            #Quiz {{ background:#07090C; border-top:1px solid {RULE}; }}
+            QPushButton#Answer {{ background:{KEY}; color:{NIBP}; border:1px solid #2B3139; border-radius:5px;
+                padding:10px 12px; font-family:'{f_num}'; font-size:15px; }}
+            QPushButton#Answer:hover {{ border-color:{ECG}; }}
+            QPushButton#Answer[state="right"] {{ background:{ECG}; color:#000; border-color:{ECG}; }}
+            QPushButton#Answer[state="wrong"] {{ background:#3A0C0C; color:{ALARM_RED}; border-color:{ALARM_RED}; }}
+            QSlider::groove:horizontal {{ background:#1E242B; height:4px; border-radius:2px; }}
+            QSlider::sub-page:horizontal {{ background:{ECG}; border-radius:2px; }}
+            QSlider::handle:horizontal {{ background:{NIBP}; width:14px; height:14px; margin:-5px 0; border-radius:7px; }}
+            QComboBox {{ background:{KEY}; border:1px solid #2B3139; border-radius:5px; padding:6px 10px; }}
+            QCheckBox::indicator {{ width:15px; height:15px; border:1px solid #3A424C; border-radius:3px; background:{KEY}; }}
+            QCheckBox::indicator:checked {{ background:{ECG}; border-color:{ECG}; }}
+            QFrame#Card {{ background:#080A0D; border:1px solid {RULE}; border-radius:6px; }}
+            #FeatureCell {{ background:#0F1318; border:1px solid {RULE}; border-radius:4px; }}
+            QProgressBar {{ background:#1E242B; border:none; border-radius:2px; }}
+            QProgressBar::chunk {{ background:{ECG}; border-radius:2px; }}
+            QScrollArea {{ border:none; }}
+            QScrollBar:vertical {{ background:{SCREEN}; width:8px; }}
+            QScrollBar::handle:vertical {{ background:#2B3139; border-radius:4px; min-height:24px; }}
+            QDialog {{ background:{BEZEL}; }}
         """)
 
-    # ── Page switch ───────────────────────────────────────────────────────────
+    # ── simulation ───────────────────────────────────────────────────────────
+    def schedule_regen(self, ms=350):
+        self._regen_timer.start(ms)
 
-    def _switch_page(self, idx):
-        self._stack.setCurrentIndex(idx)
-        self._sidebar._select(idx)
+    def regenerate(self):
+        p = self.params
+        _, sig, peaks = generate_ecg(GEN_S, p)
+        n = len(sig)
+        self._sig, self._peaks = sig, list(peaks)
+        self._pleth, self._amps = generate_pleth(n, FS, peaks, p.rhythm)
+        v = VITALS[p.rhythm]
+        self._resp = generate_resp(n, FS, v.resp_rate)
+        self._pos = 0; self._peak_i = 0
+        self.rate.setText(f"{get_rhythm_hr(p.rhythm, p.bpm):.0f} bpm")
 
-    # ── Signal generation ─────────────────────────────────────────────────────
+    def _rhythm_changed(self, i):
+        if self.quiz:
+            return
+        self.params.rhythm = self.rhythm.itemData(i)
+        self.schedule_regen(50)
 
-    def _regenerate(self):
-        self._sidebar.set_status(False, "Generating…")
-        t, s, peaks = generate_ecg(self._gen_dur, self.params)
-        self._gen_sig   = s
-        self._gen_peaks = peaks
-        self._play_pos  = 0
-        self._peak_ptr  = 0
-        self._monitor._buf[:] = 0
-        self._monitor._strip[:] = 0
+    def nudge_rate(self, d):
+        self.params.bpm = float(np.clip(self.params.bpm + d, 30, 220))
+        self.rate.setText(f"{get_rhythm_hr(self.params.rhythm, self.params.bpm):.0f} bpm")
+        self.schedule_regen()
 
-        # Rhythm badge
-        info = RHYTHM_INFO[self.params.rhythm]
-        col  = info[1]
-        self._monitor.rhythm_badge.setText(f"● {info[0].upper()}")
-        self._monitor.rhythm_badge.setStyleSheet(f"""
-            color:{col}; background:{col}18;
-            border:1.5px solid {col}55;
-            border-radius:10px; padding:8px 20px;
-        """)
-
-        if self.params.rhythm in (RhythmType.VTACH, RhythmType.AFIB):
-            snd.start_alarm()
-        else:
-            snd.stop_alarm()
-
-        self._sidebar.set_status(True, "Signal active")
-
-    # ── Main tick ─────────────────────────────────────────────────────────────
+    def set_limits(self, low=None, high=None):
+        if low is not None: self.hr_low = low
+        if high is not None: self.hr_high = high
+        self.b_hr.limits = (self.hr_high, self.hr_low); self.b_hr.update()
 
     def _tick(self):
-        if self._gen_sig is None:
+        if self._sig is None:
             return
-
-        end = self._play_pos + self._chunk
-        if end >= len(self._gen_sig):
-            self._play_pos = 0; self._peak_ptr = 0; end = self._chunk
-
-        chunk = self._gen_sig[self._play_pos:end]
-        self._play_pos = end
-
-        # Scroll buffers
-        n = len(chunk)
-        self._monitor._buf   = np.roll(self._monitor._buf, -n); self._monitor._buf[-n:]   = chunk
-        self._monitor._strip = np.roll(self._monitor._strip, -n); self._monitor._strip[-n:] = chunk
-
-        # Update plots (only if visible)
-        if self._stack.currentIndex() == 0:
-            self._monitor._curve.setData(self._monitor._tx,   self._monitor._buf)
-            self._monitor._curve2.setData(self._monitor._stx, self._monitor._strip)
-
-        # Beat events
-        while (self._peak_ptr < len(self._gen_peaks) and
-               self._gen_peaks[self._peak_ptr] < self._play_pos):
-            self._on_beat()
-            self._peak_ptr += 1
-
-        # Stats every 0.5s
-        self._beat_cnt += n
-        if self._beat_cnt >= self._sr // 2:
-            self._beat_cnt = 0; self._update_stats()
-
-        # AI every 4s
-        self._ai_cnt += n
-        if self._ai_cnt >= self._ai_ivl:
-            self._ai_cnt = 0; self._run_ai()
-
-        # Elapsed
-        self._elapsed += n
-
-    def _on_beat(self):
-        self._monitor.beat_dot.pulse()
-        self._cond.trigger()
-        self._heart_page.trigger_pulse()
-        snd.beat(self.params.rhythm)
-
-    def _update_stats(self):
-        # Every number here is measured from the signal on screen.
-        buf = self._monitor._buf
-        f = extract_features(buf, self._sr)
-        if not f.get('valid'):
+        # advance by real elapsed time, so playback stays real-time even if a frame is late
+        now = time.monotonic()
+        self._carry = getattr(self, "_carry", 0.0) + (now - getattr(self, "_last", now)) * FS
+        self._last = now
+        k = int(min(self._carry, FS // 4))
+        self._carry -= k
+        if k <= 0:
             return
-        rr_m  = f['rr_mean']
-        hr    = int(round(f['hr']))
-        qt    = int(round(f['qtc_ms'])) if f['qtc_ms'] else '—'
-        ramp  = round(float(np.percentile(buf, 99.5)), 2)
+        end = self._pos + k
+        if end > len(self._sig):
+            self._pos, self._peak_i, end = 0, 0, k
+        a, b = self._pos, end
+        ecg = self._sig[a:b]
+        self.ch_ecg.push(ecg); self.ch_pl.push(self._pleth[a:b]); self.ch_rs.push(self._resp[a:b])
+        self._abuf = np.roll(self._abuf, -len(ecg)); self._abuf[-len(ecg):] = ecg
+        self._filled = min(len(self._abuf), self._filled + len(ecg))
+        self._pos = end
+        while self._peak_i < len(self._peaks) and self._peaks[self._peak_i] < self._pos:
+            self._beat(); self._peak_i += 1
 
-        hr_col = OK if 50 <= hr <= 110 else (INFO if hr < 50 else DANGER)
-        self._monitor.hr_big.setText(str(hr))
-        self._monitor.hr_big.setStyleSheet(f"color:{hr_col}; background:transparent; font-size:32px; font-weight:bold;")
-        self._monitor.t_rr.set_value(f"{rr_m:.0f}")
-        self._monitor.t_qt.set_value(qt)
-        self._monitor.t_amp.set_value(ramp)
+    def _beat(self):
+        self.b_hr.beat()
+        self.analysis.cond.trigger()
+        self.heart.trigger_pulse()
+        snd.beat(self.params.rhythm, int(round(self._spo2)) if self.setup.pitch.isChecked() else None)
 
-        # SpO2 can't be derived from an ECG; it's a simulated value that dips
-        # with poor-output rhythms, and is labelled "(sim)" on the monitor.
-        if self.params.rhythm in (RhythmType.VTACH, RhythmType.AFIB):
-            self._monitor.t_spo.set_value("91", WARN)
+    # ── analysis, numerics, alarms ───────────────────────────────────────────
+    def _analyse(self):
+        if self._filled < FS * 4:
+            return
+        buf = self._abuf[-self._filled:]
+        f = extract_features(buf, FS)
+        r = classify(buf, FS)
+        self.features, self.result = f, r
+        v = VITALS[self.params.rhythm]
+
+        # SpO2 drifts toward the rhythm's simulated value
+        self._spo2 += np.clip(v.spo2 - self._spo2, -1.0, 1.0) + np.random.uniform(-0.25, 0.25)
+        spo2 = int(round(self._spo2))
+
+        if f.get('valid'):
+            self.b_hr.set(value=f"{f['hr']:.0f}")
+            qtc = f['qtc_ms']
+            narrow = f['qrs_ms'] < 120
+            self.b_st.set(value=f"{qtc:.0f}" if qtc and narrow else "---",
+                          foot=f"ST II {f['st_level']:+.2f}" if f['hr'] <= 150 and narrow else "ST II not measured")
         else:
-            self._monitor.t_spo.set_value("99", OK)
+            self.b_hr.set(value="---")
+        lo = max(0, self._pos - FS * SWEEP_S)
+        pr = pulse_rate(self._peaks, self._amps, lo, self._pos, FS)
+        self.b_sp.set(value=str(spo2), foot=f"Pulse {pr:.0f}" if pr else "Pulse ---")
+        self.b_rr.set(value=str(v.resp_rate))
 
-    def _run_ai(self):
-        result = classify(self._monitor._buf, self._sr)
-        self._ai_panel.update(result)
+        self.ch_ecg.set_status("Rhythm hidden" if self.quiz else "")
+        self.b_hr.set(sub="" if self.quiz else short_call(r.label))
+        self.analysis.panel.update(r)
+
+        self.alarms = [] if self.quiz else AL.evaluate(r, spo2, self.hr_low, self.hr_high)
+        self.bar.set_alarms(self.alarms)
+        self.b_hr.alarm = alarm_color(self.alarms, ("V-Tach", "Extreme", "HR "))
+        self.b_sp.alarm = alarm_color(self.alarms, ("Desat", "SpO"))
+        self.b_st.alarm = alarm_color(self.alarms, ("QTc", "ST II"))
+        self._sound_alarms()
+
+    def _sound_alarms(self):
+        want = None
+        if self.bar.paused_left() == 0:
+            top = max((a.priority for a in self.alarms if a.sounds), default=None)
+            want = {AL.RED: 'high', AL.YELLOW: 'medium'}.get(top)
+        if want != self._alarm_sound:
+            if want: snd.start_alarm(want)
+            else: snd.stop_alarm()
+            self._alarm_sound = want
+
+    def _flash(self):
+        # red flashes about 1.5 Hz; yellow holds steady in the bar but pulses slowly on the box
+        self._flash_n = getattr(self, "_flash_n", 0) + 1
+        on = self._flash_n % 2 == 0
+        self.bar.flash_on = on; self.bar.update()
+        for b in (self.b_hr, self.b_sp, self.b_st):
+            b.flash_on = on if b.alarm == ALARM_RED else (self._flash_n % 6 < 4)
+            b.update()
+
+    def pause_alarms(self):
+        self.bar.paused_until = 0 if self.bar.paused_left() else time.time() + 120
+        self.k_pause.setText("Resume alarms" if self.bar.paused_left() else "Pause alarms")
+        self.bar.update(); self._sound_alarms()
+
+    def toggle_freeze(self):
+        on = not self.ch_ecg.frozen
+        for c in (self.ch_ecg, self.ch_pl, self.ch_rs):
+            c.frozen = on; c.update()
+        self.k_freeze.setChecked(on)
+
+    # ── NIBP ─────────────────────────────────────────────────────────────────
+    def start_nibp(self):
+        if self._nibp["state"] in ("inflating", "deflating"):
+            self._nibp["state"] = "idle"
+            self.b_bp.set(foot="Stopped")
+            return
+        v = VITALS[self.params.rhythm]
+        self._nibp.update(state="inflating", p=0.0, target=v.sys + 30)
+
+    def _nibp_tick(self):
+        n = self._nibp
+        if n["state"] == "inflating":
+            n["p"] += n["target"] / 25
+            if n["p"] >= n["target"]:
+                n["state"] = "deflating"
+            self.b_bp.set(foot=f"Inflating {n['p']:.0f}")
+        elif n["state"] == "deflating":
+            n["p"] -= 3.2
+            v = VITALS[self.params.rhythm]
+            self.b_bp.set(foot=f"Measuring {n['p']:.0f}")
+            if n["p"] <= v.dia - 8:
+                j = np.random.randint(-3, 4)
+                sys_, dia = v.sys + j, v.dia + j // 2
+                n.update(state="done", at=time.strftime("%H:%M"))
+                self.b_bp.set(value=f"{sys_}/{dia}", small=f"({round(dia + (sys_ - dia) / 3)})",
+                              foot=f"Manual {n['at']}")
+        elif n["state"] == "idle" and self.b_bp.value == "---":
+            self.b_bp.set(value="-?-/-?-", foot="Press Start NIBP")
+
+    # ── strip ────────────────────────────────────────────────────────────────
+    def print_strip(self):
+        if self._filled < FS * 6:
+            return
+        f, r = self.features or {}, self.result
+        title = "Quiz strip: name the rhythm" if self.quiz else (r.label if r else "Lead II")
+        m = []
+        if f.get('valid'):
+            m = [("HR", f"{f['hr']:.0f} bpm"), ("PR", f"{f['pr_ms']:.0f} ms" if f['pr_ms'] else "---"),
+                 ("QRS", f"{f['qrs_ms']:.0f} ms"),
+                 ("QT / QTc", f"{f['qt_ms']:.0f} / {f['qtc_ms']:.0f}" if f['qtc_ms'] else "---"),
+                 ("ST", f"{f['st_level']:+.2f} mV"), ("RR varies", f"{f['rr_cv'] * 100:.0f}%")]
+        img = render_strip(self._abuf[-FS * 6:], FS, title, m)
+        folder = os.path.join(HERE, "strips"); os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, time.strftime("strip-%Y%m%d-%H%M%S.png"))
+        img.save(path)
+        self.last_strip = path
+        if not os.environ.get("CARDIOSIM_HEADLESS"):
+            StripDialog(img, os.path.relpath(path, HERE), self).exec_()
+
+    # ── quiz ─────────────────────────────────────────────────────────────────
+    def toggle_quiz(self):
+        if self.quiz:
+            self.quiz = None
+            self.quizbar.hide()
+            for w in self.quiz_hides: w.show()
+            self.params.rhythm, self.params.bpm = self._quiz_saved
+            self.rhythm.setCurrentIndex(list(RhythmType).index(self.params.rhythm))
+            self.bar.message = ""
+            self.regenerate()
+            self.k_quiz.setChecked(False)
+            return
+        self._quiz_saved = (self.params.rhythm, self.params.bpm)
+        self.show_page(0)
+        self.quizbar.show()
+        for w in self.quiz_hides: w.hide()
+        self.k_quiz.setChecked(True)
+        self.quiz_next()
+
+    def quiz_next(self):
+        prev = self.quiz.rhythm if self.quiz else None
+        self.quiz = QZ.make_question(previous=prev)
+        self.quiz_answered = False
+        self.params.rhythm, self.params.bpm = self.quiz.rhythm, float(self.quiz.bpm)
+        self.regenerate()
+        for c in (self.ch_ecg, self.ch_pl, self.ch_rs):
+            c.clear()
+        self._abuf[:] = 0; self._filled = 0
+        self.bar.message = "Rhythm quiz: alarms and rhythm calls are hidden"
+        self.bar.set_alarms([])
+        qb = self.quizbar
+        qb.q.setText("Name this rhythm")
+        for b, r in zip(qb.btns, self.quiz.options):
+            b.setText(QZ.NAMES[r]); b.setProperty("state", ""); b.setEnabled(True); restyle(b)
+        qb.next.hide(); qb.why.setText("Watch a few beats. Rate is in the HR box; pulse strength is in the pleth.")
+        self._score_text()
+
+    def quiz_answer(self, i):
+        if not self.quiz or self.quiz_answered:
+            return
+        self.quiz_answered = True
+        pick = self.quiz.options[i]; right = pick == self.quiz.rhythm
+        f = extract_features(self._abuf[-self._filled:], FS) if self._filled > FS * 3 else {}
+        qb = self.quizbar
+        for b, r in zip(qb.btns, self.quiz.options):
+            b.setProperty("state", "right" if r == self.quiz.rhythm else ("wrong" if r == pick else ""))
+            restyle(b)
+        self.streak = self.streak + 1 if right else 0
+        if self.streak > self.best:
+            self.best = self.streak; self.settings.setValue("best_streak", self.best)
+        qb.q.setText(("Correct: " if right else "Not quite. It's ") + QZ.NAMES[self.quiz.rhythm])
+        qb.why.setText(QZ.explain(self.quiz.rhythm, f))
+        qb.next.show()
+        self._score_text()
+
+    def _score_text(self):
+        self.quizbar.score.setText(f"Streak {self.streak}     Best {self.best}")
+
+    # ── pages ────────────────────────────────────────────────────────────────
+    def show_page(self, i):
+        self.pages.setCurrentIndex(i)
+        for j, b in enumerate(self.navs):
+            b.setChecked(i == j)
 
     def closeEvent(self, e):
         snd.stop_alarm(); snd.shutdown(); super().closeEvent(e)
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+def restyle(w):
+    w.style().unpolish(w); w.style().polish(w)
+
+
+def short_call(label):
+    return {"Normal Sinus Rhythm": "Sinus rhythm", "Premature Ventricular Contractions": "Sinus with PVCs",
+            "Ventricular Tachycardia": "V-Tach", "1st Degree AV Block": "1° AV block"}.get(label, label)
+
+
+def alarm_color(alarms, prefixes):
+    for a in alarms:
+        if a.priority > AL.ADVISORY and a.text.startswith(prefixes):
+            return ALARM_RED if a.priority == AL.RED else ALARM_YEL
+    return None
+
 
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("CardioSim")
     app.setStyle("Fusion")
-
     pal = QPalette()
-    pal.setColor(QPalette.Window,        QColor("#FAFBFC"))
-    pal.setColor(QPalette.WindowText,    QColor(INK))
-    pal.setColor(QPalette.Base,          QColor(WHITE))
-    pal.setColor(QPalette.Text,          QColor(INK))
-    pal.setColor(QPalette.Button,        QColor(WHITE))
-    pal.setColor(QPalette.ButtonText,    QColor(INK))
-    pal.setColor(QPalette.Highlight,     QColor(CRIM))
-    pal.setColor(QPalette.HighlightedText, QColor(WHITE))
+    for role, col in [(QPalette.Window, BEZEL), (QPalette.WindowText, KEY_TXT), (QPalette.Base, KEY),
+                      (QPalette.Text, KEY_TXT), (QPalette.Button, KEY), (QPalette.ButtonText, KEY_TXT),
+                      (QPalette.Highlight, KEY_HI), (QPalette.HighlightedText, ECG)]:
+        pal.setColor(role, QColor(col))
     app.setPalette(pal)
-
+    app.setFont(font(13, "ui"))
     win = MainWindow()
+    win.resize(1440, 880)
     win.show()
     sys.exit(app.exec_())
 

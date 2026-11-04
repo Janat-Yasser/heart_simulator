@@ -10,10 +10,10 @@ from PyQt5.QtGui import QFont, QColor, QPainter, QPen, QBrush, QPainterPath
 import math
 
 # ── Design tokens (duplicated for standalone import) ─────────────────────────
-CRIM   = "#C41E3A"; BG = "#FAFBFC"; INK = "#2D3142"
-INK2   = "#4A5568"; INK3 = "#718096"; MUTED = "#A0AABB"
-BORDER = "#E2E6EA"; WHITE = "#FFFFFF"; OK = "#0BAB60"
-INFO   = "#2563EB"; WARN  = "#E67E22"; BG2 = "#F0F2F5"
+CRIM   = "#E0475A"; CRIM2 = "#8E1C2C"; BG = "#000000"; INK = "#E8EEF2"
+INK2   = "#C3CBD3"; INK3 = "#8A949E"; MUTED = "#66707A"
+BORDER = "#23282E"; WHITE = "#080A0D"; OK = "#39FF7A"
+INFO   = "#3FD8FF"; WARN  = "#FFC400"; BG2 = "#0F1318"
 FNT_UI = "'SF Pro Display', 'Segoe UI', Helvetica, Arial, sans-serif"
 FNT_MONO = "'JetBrains Mono', Consolas, monospace"
 
@@ -83,7 +83,7 @@ if OPENGL_OK:
             glMaterialfv(GL_FRONT, GL_SPECULAR, [0.8, 0.2, 0.2, 1.0])
             glMaterialf(GL_FRONT, GL_SHININESS, 60)
 
-            glClearColor(0.98, 0.97, 0.98, 1.0)
+            glClearColor(0.0, 0.0, 0.0, 1.0)
 
         def resizeGL(self, w, h):
             glViewport(0, 0, w, max(h, 1))
@@ -362,10 +362,10 @@ class HeartPage(QWidget):
         # Title bar
         title_bar = QHBoxLayout()
         title_bar.setContentsMargins(20, 16, 20, 8)
-        tl = QLabel("3D Heart Model")
+        tl = QLabel("3D heart" if OPENGL_OK else "Heart, cross-section")
         tl.setFont(QFont(FNT_UI, 14, QFont.Bold))
         tl.setStyleSheet(f"color:{INK};")
-        sub = QLabel("Drag to rotate  ·  Scroll to zoom" if OPENGL_OK else "Anatomical cross-section")
+        sub = QLabel("Drag to rotate, scroll to zoom" if OPENGL_OK else "Pulses with every beat")
         sub.setFont(QFont(FNT_UI, 9))
         sub.setStyleSheet(f"color:{MUTED};")
         title_bar.addWidget(tl)
@@ -421,8 +421,8 @@ class HeartPage(QWidget):
         for name, col, desc in structures:
             card = QFrame()
             card.setStyleSheet(f"""
-                QFrame {{ background:{BG2}; border-left:3px solid {col};
-                border-radius:6px; padding:0px; }}
+                QFrame {{ background:{BG2}; border:none; border-left:3px solid {col};
+                border-radius:0px; padding:0px; }}
             """)
             cl = QVBoxLayout(card); cl.setContentsMargins(10, 8, 10, 8); cl.setSpacing(2)
             nl = QLabel(name); nl.setFont(QFont(FNT_UI, 9, QFont.Bold))

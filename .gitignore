@@ -5,3 +5,4 @@ venv/
 data/mitbih/
 data/mitdb/
 strips/
+paper/beats_cache.npz

@@ -6,7 +6,7 @@
 
 ![Python](https://img.shields.io/badge/Python-PyQt5-3776AB?logo=python&logoColor=white)
 ![Tests](https://img.shields.io/badge/tests-84%20passing-brightgreen)
-![License](https://img.shields.io/badge/license-MIT-blue)
+![License](https://img.shields.io/badge/license-all%20rights%20reserved-lightgrey)
 
 > Educational simulator, **not a medical device**. Don't use it for diagnosis.
 
@@ -157,4 +157,4 @@ train_beats.py        trains it (JAX), writes ai/beat_cnn.npz
 - 2nd- and 3rd-degree AV block, atrial flutter
 - Adjustable alarm limits per patient profile (adult, child)
 
-MIT licensed.
+© 2026 Janat Yasser. All rights reserved. See [LICENSE](LICENSE).

@@ -77,6 +77,8 @@ class SweepChannel(QWidget):
         self.frozen = False
         self.pen_w = width
         self.status = ""          # small text after the label (rhythm call etc.)
+        self.written = 0          # samples written so far
+        self.marks = {}           # sample number -> (text, colour): beat labels drawn over the trace
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setMinimumHeight(70)
 
@@ -87,12 +89,22 @@ class SweepChannel(QWidget):
         idx = (self.w + np.arange(k)) % self.n
         self.ring[idx] = samples
         self.w = (self.w + k) % self.n
+        self.written += k
         self.ring[(self.w + np.arange(self.gap)) % self.n] = np.nan
+        old = self.written - (self.n - self.gap)
+        for key in [m for m in self.marks if m < old]:
+            del self.marks[key]
         self.update()
+
+    def mark(self, age, text, color):
+        """Label the sample written `age` samples ago (e.g. a beat call above its QRS)."""
+        if not self.frozen and 0 <= age < self.n - self.gap:
+            self.marks[self.written - age] = (text, QColor(color))
 
     def clear(self):
         self.ring[:] = np.nan
         self.w = 0
+        self.marks.clear()
         self.update()
 
     def set_status(self, text):
@@ -131,6 +143,15 @@ class SweepChannel(QWidget):
         pen.setJoinStyle(Qt.RoundJoin)
         p.setPen(pen)
         p.drawPath(path)
+
+        # beat labels from the trained classifier, just under the label row
+        if self.marks:
+            p.setFont(font(13, "num", bold=True))
+            for wrote, (text, col) in self.marks.items():
+                idx = (self.w - (self.written - wrote)) % self.n
+                xx = 8 + idx / (self.n - 1) * (W - 16)
+                p.setPen(col)
+                p.drawText(int(xx - 10), top, 20, 16, Qt.AlignCenter, text)
 
 
 # ── parameter box ────────────────────────────────────────────────────────────

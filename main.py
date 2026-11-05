@@ -33,7 +33,8 @@ from core.ecg_generator import ECGParameters, RhythmType, generate_ecg, get_rhyt
 from core.vitals import VITALS, generate_pleth, generate_resp, pulse_rate
 from core import alarms as AL
 from core import quiz as QZ
-from ai.classifier import classify, extract_features
+from ai.classifier import classify, extract_features, _bandpass, detect_r_peaks
+from ai.beat_model import BeatClassifier, CLASSES as BEAT_CLASSES
 import audio.sound_engine as snd
 from ui.monitor import (
     SweepChannel, ParamBox, AlarmBar, font, family,
@@ -69,7 +70,12 @@ class AnalysisPage(QWidget):
         left.addWidget(lbl("A rule-based reader looks at the same 8 seconds you see: it finds each QRS, "
                            "then measures rate, regularity, P waves, PR, QRS width, ST and QT.", 13, DIM, wrap=True))
         self.panel = AIPanel()
-        left.addWidget(self.panel); left.addStretch()
+        left.addWidget(self.panel)
+        left.addWidget(lbl("Beat classifier, trained on real ECGs", 20, NIBP, "num", True))
+        self.beats = lbl("", 13, KEY_TXT, wrap=True)
+        self.beats.setTextFormat(Qt.RichText)
+        left.addWidget(self.beats)
+        left.addStretch()
         right = QVBoxLayout(); right.setSpacing(8)
         right.addWidget(lbl("Conduction", 24, NIBP, "num", True))
         right.addWidget(lbl("Each beat travels SA node, AV node, His bundle, bundle branches.", 13, DIM, wrap=True))
@@ -193,6 +199,8 @@ class MainWindow(QMainWindow):
         self._spo2 = 98.0
         self.result = None; self.features = {}
         self.alarms = []
+        self.beatnet = BeatClassifier() if BeatClassifier.available() else None
+        self.beat_calls = []
         self._alarm_sound = None
         self.quiz = None; self._quiz_saved = None
         self.streak = 0; self.best = int(self.settings.value("best_streak", 0))
@@ -419,13 +427,58 @@ class MainWindow(QMainWindow):
         self.ch_ecg.set_status("Rhythm hidden" if self.quiz else "")
         self.b_hr.set(sub="" if self.quiz else short_call(r.label))
         self.analysis.panel.update(r)
+        pvc_rate = self._run_beatnet(buf)
 
         self.alarms = [] if self.quiz else AL.evaluate(r, spo2, self.hr_low, self.hr_high)
+        if self.beatnet and not self.quiz and pvc_rate >= 6 and r.label != "Ventricular Tachycardia" \
+                and not any(a.text == "PVCs" for a in self.alarms):
+            self.alarms.append(AL.Alarm(AL.YELLOW, f"PVCs {pvc_rate:.0f}/min"))
+        self.alarms = [AL.Alarm(a.priority, f"PVCs {pvc_rate:.0f}/min") if a.text == "PVCs" and self.beatnet else a for a in self.alarms]
+        self.alarms.sort(key=lambda a: -a.priority)
         self.bar.set_alarms(self.alarms)
         self.b_hr.alarm = alarm_color(self.alarms, ("V-Tach", "Extreme", "HR "))
         self.b_sp.alarm = alarm_color(self.alarms, ("Desat", "SpO"))
         self.b_st.alarm = alarm_color(self.alarms, ("QTc", "ST II"))
         self._sound_alarms()
+
+    def _run_beatnet(self, buf):
+        """Label every beat on screen with the MIT-BIH-trained classifier, draw the
+        non-normal ones over the trace and return ventricular beats per minute."""
+        if not self.beatnet:
+            self.analysis.beats.setText("Not trained yet: run <b>python train_beats.py</b> to train it on MIT-BIH.")
+            return 0
+        peaks = detect_r_peaks(_bandpass(buf, FS), FS)
+        calls = self.beatnet.classify(buf, FS, peaks)
+        self.beat_calls = calls
+        colours = {"V": ALARM_YEL, "S": SPO2, "F": "#C79BFF"}
+        if not self.quiz:
+            for pk, lab, conf in calls:
+                if lab != "N":
+                    self.ch_ecg.mark(len(buf) - pk, lab, colours[lab])
+        counts = {c: sum(1 for _, l, _ in calls if l == c) for c in BEAT_CLASSES}
+        secs = len(buf) / FS
+        pvc_rate = counts["V"] * 60 / secs
+        m = self.beatnet.metrics or {}
+        per = m.get("per_class", {})
+        rows = "".join(
+            f"<tr><td style='padding:2px 14px 2px 0'><b>{c}</b> {BEAT_NAMES[c]}</td>"
+            f"<td style='padding:2px 14px'>{counts[c]}</td>"
+            f"<td style='padding:2px 14px'>{per.get(c, {}).get('sensitivity', 0) * 100:.0f}%</td>"
+            f"<td style='padding:2px 0 2px 14px'>{per.get(c, {}).get('ppv', 0) * 100:.0f}%</td></tr>" for c in BEAT_CLASSES)
+        hidden = "<i>Hidden during the quiz.</i><br>" if self.quiz else ""
+        self.analysis.beats.setText(
+            f"{hidden}A 1-D CNN trained on 22 patients of the MIT-BIH Arrhythmia Database labels every beat on screen. "
+            f"Ectopic beats are marked over the trace (V amber, S cyan). The last two columns are its scores on "
+            f"22 <i>other</i> patients it never saw."
+            f"<table style='margin-top:8px'><tr style='color:{DIM}'><td>Beat class</td><td style='padding:0 14px'>On screen</td>"
+            f"<td style='padding:0 14px'>Catches</td><td style='padding-left:14px'>When it says so, right</td></tr>{rows}</table>"
+            f"<span style='color:{DIM}'>Supraventricular (S) and fusion (F) beats are hard to tell apart from normal ones "
+            f"on an unseen patient; normal (N) and ventricular (V) are reliable.</span>")
+        if not self.quiz and counts["V"]:
+            self.b_hr.set(foot=f"PVC {pvc_rate:.0f}/min")
+        else:
+            self.b_hr.set(foot="")
+        return pvc_rate
 
     def _sound_alarms(self):
         want = None
@@ -576,6 +629,9 @@ class MainWindow(QMainWindow):
 
 def restyle(w):
     w.style().unpolish(w); w.style().polish(w)
+
+
+BEAT_NAMES = {"N": "normal", "S": "supraventricular", "V": "ventricular", "F": "fusion"}
 
 
 def short_call(label):

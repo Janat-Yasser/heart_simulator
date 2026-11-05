@@ -3,5 +3,5 @@ __pycache__/
 .venv/
 venv/
 data/mitbih/
-ai/ecg_cnn.pt
+data/mitdb/
 strips/

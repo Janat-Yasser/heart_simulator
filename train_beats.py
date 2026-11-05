@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Janat Yasser. All rights reserved.
 """
 Train the beat classifier on the MIT-BIH Arrhythmia Database.
 

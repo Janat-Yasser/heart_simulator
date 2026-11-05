@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Janat Yasser. All rights reserved.
 """
 ECG Signal Generator
 Gaussian-basis synthesis of P, QRS and T waves, timed in real seconds around each

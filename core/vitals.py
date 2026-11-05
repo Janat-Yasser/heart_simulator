@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Janat Yasser. All rights reserved.
 """
 Companion vital signs, driven by the simulated ECG.
 

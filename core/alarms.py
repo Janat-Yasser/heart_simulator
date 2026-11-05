@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Janat Yasser. All rights reserved.
 """
 Monitor alarms, ranked the way bedside monitors rank them (IEC 60601-1-8):
 red = high priority (act now), yellow = medium (attend soon), cyan = advisory.

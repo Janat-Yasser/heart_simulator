@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Janat Yasser. All rights reserved.
 """
 Rhythm quiz: the monitor hides the rhythm name, plays a random strip, and asks
 you to name it. The explanation afterwards uses what was measured on that strip.

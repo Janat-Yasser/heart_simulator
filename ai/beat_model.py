@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Janat Yasser. All rights reserved.
 """
 Beat classifier trained on real ECGs (MIT-BIH Arrhythmia Database).
 

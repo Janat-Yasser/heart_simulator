@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Janat Yasser. All rights reserved.
 """
 ui/widgets.py — Reusable UI components for CardioSim v3
 """

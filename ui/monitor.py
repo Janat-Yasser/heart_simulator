@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Janat Yasser. All rights reserved.
 """
 Bedside-monitor widgets: sweep waveform channels, parameter boxes and the alarm bar.
 

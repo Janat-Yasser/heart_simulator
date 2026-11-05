@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Janat Yasser. All rights reserved.
 """
 3D Heart Model Page
 Renders an anatomically-inspired 3D heart using PyOpenGL + Qt.

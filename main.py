@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Janat Yasser. All rights reserved.
 """
 CardioSim: a bedside patient monitor you can teach with.
 

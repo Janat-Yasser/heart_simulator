@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Janat Yasser. All rights reserved.
 """
 Audio Engine v3
 Supports both synthesised sounds and downloaded audio files.

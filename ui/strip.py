@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Janat Yasser. All rights reserved.
 """
 "Print strip": renders the last few seconds of lead II the way a monitor's
 recorder prints it, on ECG paper at 25 mm/s and 10 mm/mV, with a 1 mV

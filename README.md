@@ -5,7 +5,7 @@
 ![CardioSim switching from sinus rhythm to ventricular tachycardia: the alarm turns red, the pulse wave flattens and the heart-rate box flashes](docs/monitor.gif)
 
 ![Python](https://img.shields.io/badge/Python-PyQt5-3776AB?logo=python&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-84%20passing-brightgreen)
+[![CI](https://github.com/Janat-Yasser/heart_simulator/actions/workflows/ci.yml/badge.svg)](https://github.com/Janat-Yasser/heart_simulator/actions/workflows/ci.yml)
 ![License](https://img.shields.io/badge/license-all%20rights%20reserved-lightgrey)
 
 > Educational simulator, **not a medical device**. Don't use it for diagnosis.

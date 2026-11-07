@@ -1,0 +1,19 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # The tests cover the signal analysis and the beat classifier, which only need numpy/scipy;
+      # the PyQt5 monitor itself isn't started in CI.
+      - run: pip install "numpy>=1.24" "scipy>=1.10" pytest
+      - run: python -m pytest -q

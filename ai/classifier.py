@@ -46,19 +46,43 @@ def _bandpass(signal, fs, lo=0.5, hi=40.0):
 
 
 def detect_r_peaks(clean, fs):
-    """R peaks with a 200 ms refractory period (works up to ~300 bpm)."""
+    """R peaks with a 200 ms refractory period (works up to ~300 bpm).
+
+    Complexes are found on the absolute signal, because many real PVCs point down in lead II.
+    Each peak is then moved to the upward R wave if one at least half as tall lies within 60 ms,
+    so upright beats are located on their R wave as before."""
     from scipy.signal import find_peaks
     if len(clean) < fs // 2:
         return np.array([], dtype=int)
-    amp = np.percentile(np.abs(clean), 99.5)
+    mag = np.abs(clean)
+    amp = np.percentile(mag, 99.5)
     if amp < 0.2:
         return np.array([], dtype=int)
-    peaks, props = find_peaks(clean, height=0.45 * amp, distance=int(0.20 * fs), prominence=0.35 * amp)
+    peaks, props = find_peaks(mag, height=0.45 * amp, distance=int(0.20 * fs), prominence=0.35 * amp)
     if len(peaks) >= 3:
-        # Drop tall T waves: real R peaks are similar in height to each other.
+        # Drop tall T waves: real QRS complexes are similar in size to each other.
         keep = props['peak_heights'] >= 0.6 * np.median(props['peak_heights'])
         peaks = peaks[keep]
-    return peaks
+    # T-wave check (as in Pan-Tompkins): a peak soon after a beat whose steepest slope is under
+    # half that beat's is a T wave, not a QRS.
+    if len(peaks) >= 2:
+        d = np.abs(np.gradient(clean))
+        sw = int(0.05 * fs)
+        slope = np.array([d[max(0, p - sw):p + sw].max() for p in peaks])
+        kept = [0]
+        for i in range(1, len(peaks)):
+            j = kept[-1]
+            if peaks[i] - peaks[j] < int(0.36 * fs) and slope[i] < 0.5 * slope[j]:
+                continue
+            kept.append(i)
+        peaks = peaks[kept]
+    w = int(0.06 * fs)
+    out = []
+    for p in peaks:
+        lo, hi = max(0, p - w), min(len(clean), p + w + 1)
+        q = lo + int(np.argmax(clean[lo:hi]))
+        out.append(q if clean[q] >= 0.5 * mag[p] else p)
+    return np.unique(np.asarray(out, dtype=int))
 
 
 def _qrs_bounds(clean, pk, fs):

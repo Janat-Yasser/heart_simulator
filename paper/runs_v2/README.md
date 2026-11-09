@@ -1,0 +1,1 @@
+Results of the second version of the paper, written by paper/v2_*.py. Per-run predictions (*.npz) and per-strip rhythm files are not kept in git; re-run paper/v2_final.py and paper/v2_xqrs.py to regenerate them.

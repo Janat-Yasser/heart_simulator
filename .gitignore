@@ -6,3 +6,7 @@ data/mitbih/
 data/mitdb/
 strips/
 paper/beats_cache.npz
+paper/v2_cache/
+# per-run predictions and weights: regenerate with paper/v2_final.py and paper/v2_xqrs.py
+paper/runs_v2/*.npz
+paper/runs_v2/rhythm_strips*.json

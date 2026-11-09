@@ -72,7 +72,7 @@ Keys: **F** freeze, **Space** pause alarm audio for 2 minutes, **N** start the b
 
 | Feature | How it's measured |
 |---|---|
-| Heart rate / RR | R-peak detection with a 200 ms refractory period (works to about 300 bpm) |
+| Heart rate / RR | QRS detection on both polarities (real PVCs often point down), a 200 ms refractory period (works to about 300 bpm) and a slope check that rejects T waves. On real MIT-BIH test patients it finds 97.8% of beats with 99.7% positive predictivity |
 | QRS width | QRS onset to offset, where the slope drops below 12% of its peak |
 | P wave and PR | Largest deflection up to 350 ms before the QRS, then P onset to QRS onset |
 | ST level | Against the PR baseline at J+60 ms (J+40 ms above 100 bpm). Not assessed above 150 bpm, or on wide complexes |
@@ -152,8 +152,8 @@ train_beats.py        trains it (JAX), writes ai/beat_cnn.npz
 
 ## Roadmap
 
-- Better supraventricular-beat detection (longer RR context, patient-adaptive normalisation)
-- Validate the analyser on real MIT-BIH strips, not only simulated ones
+- Better supraventricular-beat detection: a 5-minute patient baseline was tried and didn't help (see the paper); P-wave shape is next
+- Tune the rhythm rules on real recordings: on real MIT-BIH strips they call only about a third of sinus-rhythm strips normal (`paper/v2_rhythm.py`)
 - 2nd- and 3rd-degree AV block, atrial flutter
 - Adjustable alarm limits per patient profile (adult, child)
 

@@ -35,4 +35,4 @@ for rh in RhythmType:
                      "V_sens": round(tp / (tp + fn), 3) if tp + fn else None, "V_ppv": round(tp / (tp + fp), 3) if tp + fp else None,
                      "unmatched": missed}
     print(rh.value, out[rh.value])
-json.dump(out, open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "sim_transfer.json"), "w"), indent=2)
+json.dump(out, open(os.path.join(os.path.dirname(os.path.abspath(__file__)), ("sim_transfer" + (sys.argv[1] if len(sys.argv) > 1 else "") + ".json")), "w"), indent=2)

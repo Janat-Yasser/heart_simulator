@@ -1,0 +1,98 @@
+{
+  "Normal Sinus Rhythm": {
+    "beats": 535,
+    "fractions": {
+      "N": 1.0,
+      "S": 0.0,
+      "V": 0.0,
+      "F": 0.0
+    },
+    "V_sens": null,
+    "V_ppv": null,
+    "unmatched": 0
+  },
+  "Bradycardia": {
+    "beats": 330,
+    "fractions": {
+      "N": 1.0,
+      "S": 0.0,
+      "V": 0.0,
+      "F": 0.0
+    },
+    "V_sens": null,
+    "V_ppv": null,
+    "unmatched": 0
+  },
+  "Tachycardia": {
+    "beats": 900,
+    "fractions": {
+      "N": 1.0,
+      "S": 0.0,
+      "V": 0.0,
+      "F": 0.0
+    },
+    "V_sens": null,
+    "V_ppv": null,
+    "unmatched": 0
+  },
+  "Atrial Fibrillation": {
+    "beats": 759,
+    "fractions": {
+      "N": 0.565,
+      "S": 0.435,
+      "V": 0.0,
+      "F": 0.0
+    },
+    "V_sens": null,
+    "V_ppv": null,
+    "unmatched": 0
+  },
+  "Premature Ventricular Contraction": {
+    "beats": 533,
+    "fractions": {
+      "N": 0.747,
+      "S": 0.0,
+      "V": 0.253,
+      "F": 0.0
+    },
+    "V_sens": 1.0,
+    "V_ppv": 1.0,
+    "unmatched": 0
+  },
+  "1st Degree Heart Block": {
+    "beats": 535,
+    "fractions": {
+      "N": 1.0,
+      "S": 0.0,
+      "V": 0.0,
+      "F": 0.0
+    },
+    "V_sens": null,
+    "V_ppv": null,
+    "unmatched": 0
+  },
+  "Ventricular Tachycardia": {
+    "beats": 1095,
+    "fractions": {
+      "N": 0.0,
+      "S": 0.0,
+      "V": 1.0,
+      "F": 0.0
+    },
+    "V_sens": 1.0,
+    "V_ppv": 1.0,
+    "unmatched": 0
+  },
+  "ST Elevation (STEMI)": {
+    "beats": 535,
+    "fractions": {
+      "N": 1.0,
+      "S": 0.0,
+      "V": 0.0,
+      "F": 0.0
+    },
+    "V_sens": null,
+    "V_ppv": null,
+    "unmatched": 0
+  }
+}

@@ -1,0 +1,123 @@
+{
+  "strips": 7131,
+  "records": 44,
+  "hr": {
+    "mae": 1.2556060361158323,
+    "median_abs": 4.263256414560601e-14,
+    "within_5bpm": 0.9246767847105115,
+    "within_10bpm": 0.9666947723440135,
+    "mean_signed": -0.6921971255706781
+  },
+  "hr_sinus_only": {
+    "mae": 0.7642916691934462,
+    "within_5bpm": 0.94921875
+  },
+  "no_signal_strips": 15,
+  "af": {
+    "strips": 703,
+    "sensitivity": 0.620199146514936,
+    "specificity": 0.8732109520846297,
+    "ppv": 0.34852118305355717,
+    "af_records": [
+      "201",
+      "202",
+      "203",
+      "210",
+      "219",
+      "221",
+      "222"
+    ]
+  },
+  "vt": {
+    "strips": 8,
+    "sensitivity": 0.625,
+    "false_calls_elsewhere": 17
+  },
+  "sinus": {
+    "strips": 5903,
+    "called_normal_sinus": 0.3496527189564628,
+    "called_af": 0.09639166525495511
+  },
+  "by_rhythm": {
+    "Sinus rhythm": {
+      "Normal Sinus Rhythm": 2064,
+      "1st Degree AV Block": 1267,
+      "Unclassified Rhythm": 1238,
+      "Atrial Fibrillation": 569,
+      "Premature Ventricular Contractions": 487,
+      "Sinus Arrhythmia": 133,
+      "Sinus Bradycardia": 39,
+      "ST Elevation": 35,
+      "Junctional Bradycardia": 20,
+      "Sinus Tachycardia": 20,
+      "Ventricular Tachycardia": 16,
+      "No Signal": 15
+    },
+    "Atrial fibrillation": {
+      "Atrial Fibrillation": 436,
+      "Premature Ventricular Contractions": 233,
+      "Unclassified Rhythm": 30,
+      "Sinus Tachycardia": 2,
+      "ST Elevation": 1,
+      "Ventricular Tachycardia": 1
+    },
+    "Sinus bradycardia": {
+      "Atrial Fibrillation": 163,
+      "1st Degree AV Block": 7,
+      "Unclassified Rhythm": 6,
+      "Premature Ventricular Contractions": 3
+    },
+    "Ventricular bigeminy": {
+      "Premature Ventricular Contractions": 43,
+      "Atrial Fibrillation": 42,
+      "1st Degree AV Block": 20,
+      "Sinus Bradycardia": 10,
+      "Junctional Bradycardia": 9,
+      "Unclassified Rhythm": 1,
+      "ST Elevation": 1
+    },
+    "2nd-degree block": {
+      "Sinus Bradycardia": 65
+    },
+    "Atrial flutter": {
+      "Atrial Fibrillation": 26,
+      "Premature Ventricular Contractions": 19,
+      "Sinus Tachycardia": 4,
+      "Sinus Arrhythmia": 1
+    },
+    "Ventricular trigeminy": {
+      "Sinus Arrhythmia": 21,
+      "Premature Ventricular Contractions": 9,
+      "1st Degree AV Block": 6,
+      "Atrial Fibrillation": 5,
+      "Sinus Bradycardia": 1,
+      "Normal Sinus Rhythm": 1
+    },
+    "Pre-excitation (WPW)": {
+      "Unclassified Rhythm": 23,
+      "Atrial Fibrillation": 1
+    },
+    "Idioventricular rhythm": {
+      "Unclassified Rhythm": 8,
+      "Atrial Fibrillation": 2,
+      "ST Elevation": 1
+    },
+    "Supraventricular tachyarrhythmia": {
+      "Sinus Tachycardia": 6,
+      "1st Degree AV Block": 2,
+      "ST Elevation": 2
+    },
+    "Ventricular tachycardia": {
+      "Ventricular Tachycardia": 5,
+      "1st Degree AV Block": 3
+    },
+    "Atrial bigeminy": {
+      "Atrial Fibrillation": 6
+    },
+    "Nodal rhythm": {
+      "Unclassified Rhythm": 1,
+      "Premature Ventricular Contractions": 1,
+      "Atrial Fibrillation": 1
+    }
+  }
+}
